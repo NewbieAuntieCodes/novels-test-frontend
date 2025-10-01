@@ -1,0 +1,79 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String       @id @default(uuid())
+  username    String       @unique
+  password    String       // bcrypt 加密后的密码
+  createdAt   DateTime     @default(now())
+  novels      Novel[]
+  tags        Tag[]
+  annotations Annotation[]
+}
+
+model Novel {
+  id          String       @id @default(uuid())
+  title       String
+  text        String
+  chapters    Json?        // Chapter[] 存储为 JSON
+  storylines  Json?        // Storyline[] 存储为 JSON
+  plotAnchors Json?        // PlotAnchor[] 存储为 JSON
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  annotations Annotation[]
+
+  @@index([userId])
+}
+
+model Tag {
+  id          String          @id @default(uuid())
+  name        String
+  color       String
+  parentId    String?
+  userId      String
+  createdAt   DateTime        @default(now())
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent      Tag?            @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Tag[]           @relation("TagHierarchy")
+  annotations AnnotationTag[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Annotation {
+  id                      String          @id @default(uuid())
+  text                    String
+  startIndex              Int
+  endIndex                Int
+  isPotentiallyMisaligned Boolean         @default(false)
+  createdAt               DateTime        @default(now())
+  novelId                 String
+  userId                  String
+  novel                   Novel           @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  user                    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tags                    AnnotationTag[]
+
+  @@index([novelId])
+  @@index([userId])
+}
+
+model AnnotationTag {
+  annotationId String
+  tagId        String
+  annotation   Annotation @relation(fields: [annotationId], references: [id], onDelete: Cascade)
+  tag          Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([annotationId, tagId])
+}
