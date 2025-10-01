@@ -3,7 +3,7 @@ import styled from '@emotion/styled';
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS } from '../../styles';
 
 interface LoginPageProps {
-  onLogin: (username: string) => void;
+  onLogin: (username: string, password: string) => void;
   onNavigateToRegister: () => void;
 }
 
@@ -112,7 +112,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onNavigateToRegister }) 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (username.trim() && password.trim()) {
-      onLogin(username);
+      onLogin(username, password);
     } else {
       alert('请输入用户名和密码。');
     }

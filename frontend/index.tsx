@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, Chapter, User, TagTemplate } from './types';
-import { generateId, splitTextIntoChapters } from './utils';
+import { generateId, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME, PENDING_ANNOTATION_TAG_COLOR } from './utils';
 import { FONTS, SPACING, COLORS } from './styles'; // Import shared styles
 import { tagTemplates as initialTagTemplates } from './components/tagpanel/tagTemplates';
 import { bootstrapDemoData } from './data/bootstrap';
+import { authApi, novelsApi, tagsApi, annotationsApi, TokenManager } from './api';
 
 
 import LoginPage from './components/auth/LoginPage';
@@ -95,28 +96,62 @@ const App: React.FC = () => {
   };
 
   // --- Auth Handlers ---
-  const handleLogin = (username: string) => {
-    const user: User = { id: generateId(), username };
-    setCurrentUser(user);
-    
-    // Bootstrap with demo data for the new user session
-    const { novels: demoNovels, tags: demoTags, annotations: demoAnnotations } = bootstrapDemoData();
-    setNovels(demoNovels.map(n => ({ ...n, userId: user.id })));
-    setAllUserTags(demoTags.map(t => ({ ...t, userId: user.id })));
-    setAllUserAnnotations(demoAnnotations.map(a => ({ ...a, userId: user.id })));
+  const handleLogin = async (username: string, password: string) => {
+    try {
+      const response = await authApi.login(username, password);
+      TokenManager.setToken(response.token);
 
-    navigateTo('#/projects');
+      const user: User = { id: response.user.id, username: response.user.username };
+      setCurrentUser(user);
+
+      // 从后端加载用户数据
+      const [novelsData, tagsData, annotationsData] = await Promise.all([
+        novelsApi.getAll(),
+        tagsApi.getAll(),
+        annotationsApi.getAll(),
+      ]);
+
+      setNovels(novelsData);
+
+      // 确保"待标注"标签存在
+      let finalTags = tagsData;
+      const hasPendingTag = tagsData.some(t => t.name === PENDING_ANNOTATION_TAG_NAME);
+      if (!hasPendingTag) {
+        try {
+          const pendingTag = await tagsApi.create({
+            name: PENDING_ANNOTATION_TAG_NAME,
+            color: PENDING_ANNOTATION_TAG_COLOR,
+            parentId: null,
+          });
+          finalTags = [...tagsData, pendingTag];
+        } catch (error) {
+          console.error('创建待标注标签失败:', error);
+        }
+      }
+
+      setAllUserTags(finalTags);
+      setAllUserAnnotations(annotationsData);
+
+      navigateTo('#/projects');
+    } catch (error) {
+      alert(`登录失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
   };
 
-  const handleRegister = (username: string) => {
-    alert(`用户 "${username}" 注册成功！请登录。`);
-    navigateTo('#/login');
+  const handleRegister = async (username: string, password: string) => {
+    try {
+      await authApi.register(username, password);
+      alert(`用户 "${username}" 注册成功！请登录。`);
+      navigateTo('#/login');
+    } catch (error) {
+      alert(`注册失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
   };
 
   const handleLogout = () => {
+    TokenManager.removeToken();
     setCurrentUser(null);
     setEditingNovelId(null);
-    // Also clear data on logout to prevent data leaking to the next session
     setNovels([]);
     setAllUserTags([]);
     setAllUserAnnotations([]);
@@ -185,35 +220,45 @@ const App: React.FC = () => {
     return newNovel.id;
   };
 
-  const handleUploadNovel = (title: string, text: string): string | null => {
+  const handleUploadNovel = async (title: string, text: string): Promise<string | null> => {
     if (!currentUser) return null;
-     if (!title.trim()) {
-        alert("小说标题不能为空。");
-        return null;
+    if (!title.trim()) {
+      alert("小说标题不能为空。");
+      return null;
     }
 
-    const normalizedText = text.replace(/\r\n|\r/g, '\n');
-    const chapters = splitTextIntoChapters(normalizedText);
-    const newNovel: Novel = {
-        id: generateId(),
+    try {
+      const normalizedText = text.replace(/\r\n|\r/g, '\n');
+      const chapters = splitTextIntoChapters(normalizedText);
+
+      const newNovel = await novelsApi.create({
         title: title.trim(),
         text: normalizedText,
-        userId: currentUser.id,
         chapters: chapters,
         storylines: [],
         plotAnchors: [],
-    };
-    setNovels(prev => [...prev, newNovel]);
-    alert(`小说 "${title}" 已成功上传并自动分章。`);
-    return newNovel.id;
+      });
+
+      setNovels(prev => [...prev, newNovel]);
+      alert(`小说 "${title}" 已成功上传并自动分章。`);
+      return newNovel.id;
+    } catch (error) {
+      alert(`上传失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      return null;
+    }
   };
   
-  const handleDeleteNovel = (novelId: string) => {
+  const handleDeleteNovel = async (novelId: string) => {
     if (!currentUser) return;
-    setNovels(prev => prev.filter(n => n.id !== novelId));
-    setAllUserAnnotations(prev => prev.filter(a => a.novelId !== novelId));
-    if (editingNovelId === novelId) {
-      navigateTo("#/projects");
+    try {
+      await novelsApi.delete(novelId);
+      setNovels(prev => prev.filter(n => n.id !== novelId));
+      setAllUserAnnotations(prev => prev.filter(a => a.novelId !== novelId));
+      if (editingNovelId === novelId) {
+        navigateTo("#/projects");
+      }
+    } catch (error) {
+      alert(`删除失败: ${error instanceof Error ? error.message : '未知错误'}`);
     }
   };
 

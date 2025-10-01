@@ -3,7 +3,7 @@ import styled from '@emotion/styled';
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS } from '../../styles';
 
 interface RegistrationPageProps {
-  onRegister: (username: string) => void;
+  onRegister: (username: string, password: string) => void;
   onNavigateToLogin: () => void;
 }
 
@@ -122,7 +122,7 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ onRegister, onNavig
       alert('两次输入的密码不一致。');
       return;
     }
-    onRegister(username);
+    onRegister(username, password);
   };
 
   return (
