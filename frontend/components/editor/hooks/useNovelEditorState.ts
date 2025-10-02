@@ -621,10 +621,10 @@ export const useNovelEditorState = ({
         return s;
       });
 
-    const updatedPlotAnchors = (novel.plotAnchors || []).map(anchor => ({
-      ...anchor,
-      storylineIds: anchor.storylineIds.filter(id => id !== storylineId)
-    })).filter(anchor => anchor.storylineIds.length > 0);
+    // 删除所有包含该故事线的剧情锚点
+    const updatedPlotAnchors = (novel.plotAnchors || []).filter(
+      anchor => !anchor.storylineIds.includes(storylineId)
+    );
 
     // 先更新本地状态
     setNovels(novels => novels.map(n =>
@@ -662,6 +662,33 @@ export const useNovelEditorState = ({
     } catch (error) {
       console.error('保存剧情锚点到后端失败:', error);
       alert('创建剧情锚点失败,请稍后重试');
+    }
+  };
+
+  // 创建待归类锚点（用于标注模式下的快速标记）
+  const handleAddPendingAnchor = async (position: number) => {
+    const newAnchor: PlotAnchor = {
+      id: generateId(),
+      description: '',
+      position,
+      storylineIds: [],
+      isPending: true,
+    };
+    const updatedPlotAnchors = [...(novel.plotAnchors || []), newAnchor];
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, plotAnchors: updatedPlotAnchors }
+        : n
+    ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
+    } catch (error) {
+      console.error('保存待归类锚点到后端失败:', error);
+      alert('创建待归类锚点失败,请稍后重试');
     }
   };
 
@@ -769,6 +796,7 @@ export const useNovelEditorState = ({
     handleUpdateStoryline,
     handleDeleteStoryline,
     handleAddPlotAnchor,
+    handleAddPendingAnchor,
     handleUpdatePlotAnchor,
     handleDeletePlotAnchor,
   };

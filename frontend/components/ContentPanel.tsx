@@ -29,6 +29,7 @@ interface ContentPanelProps {
   currentSelection: SelectionDetails | null;
   // Storyline Props
   onAddPlotAnchor: (description: string, position: number, storylineIds: string[]) => void;
+  onAddPendingAnchor?: (position: number) => void; // For annotation mode quick marking
   onUpdatePlotAnchor: (anchorId: string, updates: Partial<PlotAnchor>) => void;
   onDeletePlotAnchor: (anchorId: string) => void;
   scrollToAnchorId: string | null;
@@ -187,6 +188,42 @@ const SnippetSourceNovel = styled.p<{ effectiveColor?: string }>`
 
 const Placeholder = styled.p(globalPlaceholderTextStyles);
 
+const QuickActionToolbar = styled.div`
+  display: flex;
+  gap: ${SPACING.sm};
+  padding: ${SPACING.sm};
+  background-color: ${COLORS.gray100};
+  border-bottom: 1px solid ${COLORS.gray300};
+  align-items: center;
+`;
+
+const QuickMarkButton = styled.button`
+  padding: ${SPACING.xs} ${SPACING.md};
+  background-color: ${COLORS.warning};
+  color: ${COLORS.dark};
+  border: none;
+  border-radius: ${BORDERS.radius};
+  cursor: pointer;
+  font-size: ${FONTS.sizeSmall};
+  transition: all 0.2s;
+
+  &:hover {
+    opacity: 0.8;
+    box-shadow: ${SHADOWS.small};
+  }
+
+  &:disabled {
+    background-color: ${COLORS.gray400};
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+`;
+
+const ToolbarHint = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.textLight};
+`;
+
 // --- Storyline specific components ---
 const ParagraphWrapper = styled.div`
   position: relative;
@@ -296,7 +333,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   viewMode, activeFilterTagDetails, globalFilterTagName, allNovelTags, editorMode,
   onDeleteAnnotation,
   currentSelection,
-  onAddPlotAnchor, onDeletePlotAnchor, onUpdatePlotAnchor,
+  onAddPlotAnchor, onAddPendingAnchor, onDeletePlotAnchor, onUpdatePlotAnchor,
   scrollToAnchorId, onScrollToAnchorComplete
 }) => {
   const [editedText, setEditedText] = useState('');
@@ -531,7 +568,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
 
     const currentDisplayText = textForPreview;
-    if (!currentDisplayText.trim() && (editorMode === 'read' || (editorMode === 'edit' && !novel.text && !selectedChapter))) {
+    if (!currentDisplayText.trim() && (editorMode === 'tag' || (editorMode === 'edit' && !novel.text && !selectedChapter))) {
       const placeholderMsg = selectedChapter 
         ? "当前章节内容为空。" 
         : (editorMode === 'edit' ? "在此处粘贴或输入您的小说文本。" : "小说内容为空。");
@@ -665,12 +702,12 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     if (editorMode === 'annotation') {
         return selectedChapter ? `标注模式: ${selectedChapter.title}` : "标注模式: 全文预览与标注";
     }
-    if (editorMode === 'read') {
+    if (editorMode === 'tag') {
         if (viewMode === 'snippet') {
           if (globalFilterTagName) return `片段: 全局搜索 "${globalFilterTagName}"`;
           return activeFilterTagDetails ? `片段: ${activeFilterTagDetails.name} (含子标签)` : "片段阅读";
         }
-        return selectedChapter ? `阅读模式: ${selectedChapter.title}` : "阅读模式: 小说原文";
+        return selectedChapter ? `标签模式: ${selectedChapter.title}` : "标签模式: 小说原文";
     }
     if (editorMode === 'storyline') {
         return selectedChapter ? `剧情线模式: ${selectedChapter.title}` : "剧情线模式: 小说原文";
@@ -702,6 +739,15 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
   };
 
+  const handleQuickMarkPosition = () => {
+    if (!onAddPendingAnchor || !currentSelection) return;
+
+    // 使用当前选择的起始位置作为锚点位置
+    const offset = selectedChapter ? selectedChapter.originalStartIndex : 0;
+    const position = currentSelection.startIndex + offset;
+
+    onAddPendingAnchor(position);
+  };
 
   return (
     <Panel style={style}>
@@ -718,10 +764,24 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         />
       )}
 
-      {(editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && (
+      {(editorMode === 'annotation' || editorMode === 'tag' || editorMode === 'storyline') && (
         <ContentPreviewContainer>
-          <ContentDisplay 
-            id="content-display-area" 
+          {editorMode === 'annotation' && onAddPendingAnchor && (
+            <QuickActionToolbar>
+              <QuickMarkButton
+                onClick={handleQuickMarkPosition}
+                disabled={!currentSelection}
+                title="标记当前选中位置为待归类锚点"
+              >
+                📍 标记剧情位置
+              </QuickMarkButton>
+              <ToolbarHint>
+                {currentSelection ? '选中文本后点击按钮快速标记' : '请先选中文本'}
+              </ToolbarHint>
+            </QuickActionToolbar>
+          )}
+          <ContentDisplay
+            id="content-display-area"
             onMouseUp={editorMode === 'annotation' ? onTextSelection : undefined}
             role="article"
             aria-live="polite"

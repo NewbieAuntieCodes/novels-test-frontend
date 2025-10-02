@@ -11,6 +11,8 @@ import { usePanelResizer, MIN_PANEL_PERCENTAGE } from './hooks/usePanelResizer';
 import { useNovelEditorState } from './hooks/useNovelEditorState';
 import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
+import PendingAnchorsPanel from '../storyline/PendingAnchorsPanel';
+import TagSelectionPanel from '../tagpanel/TagSelectionPanel';
 import { novelsApi, annotationsApi } from '../../api';
 
 
@@ -26,7 +28,7 @@ interface NovelEditorPageProps {
   onUpdateTagName: (tagId: string, newName: string) => void;
 }
 
-export type EditorMode = 'edit' | 'annotation' | 'read' | 'storyline'; 
+export type EditorMode = 'edit' | 'annotation' | 'tag' | 'storyline'; // 'read' renamed to 'tag' 
 
 const EditorPageContainer = styled.div`
   display: flex;
@@ -221,7 +223,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
     mainContentAreaRef,
   });
 
-  const contentPanelViewMode = (editorMode === 'read' && (editorState.activeTagId || editorState.globalFilterTagName)) ? 'snippet' : 'full';
+  const contentPanelViewMode = (editorMode === 'tag' && (editorState.activeTagId || editorState.globalFilterTagName)) ? 'snippet' : 'full';
 
   // 加载中状态
   if (isLoadingNovelData) {
@@ -271,13 +273,13 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             标注模式
           </ModeToggleButton>
           <ModeToggleButton
-            isActive={editorMode === 'read'}
-            onClick={() => setEditorMode('read')}
+            isActive={editorMode === 'tag'}
+            onClick={() => setEditorMode('tag')}
             role="radio"
-            aria-checked={editorMode === 'read'}
-            title="阅读模式：用于查阅小说内容、已标注的片段。"
+            aria-checked={editorMode === 'tag'}
+            title="标签模式：用于管理标签、查看已标注的片段。"
           >
-            阅读模式
+            标签模式
           </ModeToggleButton>
           <ModeToggleButton
             isActive={editorMode === 'storyline'}
@@ -319,19 +321,28 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             onDeleteStoryline={editorState.handleDeleteStoryline}
             onSelectStoryline={editorState.handleSelectStoryline}
           />
-        ) : (
+        ) : editorMode === 'tag' ? (
           <TagPanel
             style={{ flexBasis: `${panelWidths[1]}%` }}
             tags={editorState.currentUserTags}
-            onAddTag={editorState.handleAddTag} 
-            activeTagId={editorState.activeTagId} 
+            onAddTag={editorState.handleAddTag}
+            activeTagId={editorState.activeTagId}
             onApplyTagToSelection={editorState.applyTagToSelection}
             onSelectTagForReadMode={editorState.selectTagForReadMode}
             onUpdateTagParent={editorState.handleUpdateTagParent}
             onUpdateTagColor={editorState.handleUpdateTagColor}
-            onUpdateTagName={onUpdateTagName} 
+            onUpdateTagName={onUpdateTagName}
             editorMode={editorMode}
             onTagGlobalSearch={editorState.handleTagGlobalSearch}
+            currentSelection={editorState.currentSelection}
+            onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
+          />
+        ) : (
+          <TagSelectionPanel
+            style={{ flexBasis: `${panelWidths[1]}%` }}
+            tags={editorState.currentUserTags}
+            activeTagId={editorState.activeTagId}
+            onApplyTagToSelection={editorState.applyTagToSelection}
             currentSelection={editorState.currentSelection}
             onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
           />
@@ -365,6 +376,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           currentSelection={editorState.currentSelection}
           // Storyline props
           onAddPlotAnchor={editorState.handleAddPlotAnchor}
+          onAddPendingAnchor={editorMode === 'annotation' ? editorState.handleAddPendingAnchor : undefined}
           onDeletePlotAnchor={editorState.handleDeletePlotAnchor}
           onUpdatePlotAnchor={editorState.handleUpdatePlotAnchor}
           scrollToAnchorId={editorState.scrollToAnchorId}
@@ -389,16 +401,45 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
              activeStorylineId={editorState.activeStorylineId}
              onSelectAnchor={editorState.setScrollToAnchorId}
              onUpdateAnchor={editorState.handleUpdatePlotAnchor}
+             onDeleteAnchor={editorState.handleDeletePlotAnchor}
            />
+        ) : editorMode === 'annotation' ? (
+          <div style={{ flexBasis: `${panelWidths[3]}%`, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <FilterResultsPanel
+              style={{ flex: 1, minHeight: 0 }}
+              annotations={editorState.annotationsToDisplayOrFilter}
+              getTagById={editorState.getTagById}
+              activeFilterTag={editorState.activeTagDetails}
+              globalFilterTagName={editorState.globalFilterTagName}
+              onTagClick={editorState.selectTagForReadMode}
+              onTagDoubleClick={editorState.handleTagGlobalSearch}
+              allUserTags={editorState.currentUserTags}
+              onDeleteAnnotation={editorState.handleDeleteAnnotation}
+            />
+            <PendingAnchorsPanel
+              style={{ flex: 1, minHeight: 0 }}
+              plotAnchors={novel.plotAnchors || []}
+              novelText={novel.text}
+              onSelectAnchor={editorState.setScrollToAnchorId}
+              onEditAnchor={(anchorId) => {
+                const anchor = (novel.plotAnchors || []).find(a => a.id === anchorId);
+                if (anchor) {
+                  // Convert pending anchor to regular anchor by removing isPending flag
+                  editorState.handleUpdatePlotAnchor(anchorId, { isPending: false });
+                }
+              }}
+              onDeleteAnchor={editorState.handleDeletePlotAnchor}
+            />
+          </div>
         ) : (
           <FilterResultsPanel
             style={{ flexBasis: `${panelWidths[3]}%` }}
-            annotations={editorState.annotationsToDisplayOrFilter} 
+            annotations={editorState.annotationsToDisplayOrFilter}
             getTagById={editorState.getTagById}
-            activeFilterTag={editorState.activeTagDetails} 
-            globalFilterTagName={editorState.globalFilterTagName} 
-            onTagClick={editorState.selectTagForReadMode} 
-            onTagDoubleClick={editorState.handleTagGlobalSearch} 
+            activeFilterTag={editorState.activeTagDetails}
+            globalFilterTagName={editorState.globalFilterTagName}
+            onTagClick={editorState.selectTagForReadMode}
+            onTagDoubleClick={editorState.handleTagGlobalSearch}
             allUserTags={editorState.currentUserTags}
             onDeleteAnnotation={editorState.handleDeleteAnnotation}
           />

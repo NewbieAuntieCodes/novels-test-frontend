@@ -44,6 +44,7 @@ export interface PlotAnchor {
   position: number; // Index in the full novel text
   description: string;
   storylineIds: string[];
+  isPending?: boolean; // True if this is a pending anchor (待归类锚点)
 }
 
 export interface Novel {

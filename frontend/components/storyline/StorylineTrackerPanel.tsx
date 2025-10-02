@@ -9,6 +9,7 @@ interface StorylineTrackerPanelProps {
   activeStorylineId: string | null;
   onSelectAnchor: (anchorId: string) => void;
   onUpdateAnchor: (anchorId: string, updates: Partial<PlotAnchor>) => void;
+  onDeleteAnchor: (anchorId: string) => void;
   style?: React.CSSProperties;
 }
 
@@ -48,6 +49,10 @@ const AnchorItem = styled.li`
     box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     border-color: ${COLORS.primary};
   }
+
+  &:hover button {
+    opacity: 1;
+  }
 `;
 
 const AnchorDescription = styled.p`
@@ -77,12 +82,31 @@ const EditingTextarea = styled.textarea`
 
 const Placeholder = styled.div(globalPlaceholderTextStyles);
 
+const DeleteButton = styled.button`
+  position: absolute;
+  top: ${SPACING.sm};
+  right: ${SPACING.sm};
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: ${COLORS.danger};
+  font-size: 16px;
+  padding: ${SPACING.xs};
+  opacity: 0;
+  transition: opacity 0.2s;
+
+  &:hover {
+    color: ${COLORS.dangerHover};
+  }
+`;
+
 const StorylineTrackerPanel: React.FC<StorylineTrackerPanelProps> = ({
   plotAnchors,
   storylines,
   activeStorylineId,
   onSelectAnchor,
   onUpdateAnchor,
+  onDeleteAnchor,
   style,
 }) => {
   const [editingAnchor, setEditingAnchor] = useState<{ id: string; description: string } | null>(null);
@@ -152,6 +176,17 @@ const StorylineTrackerPanel: React.FC<StorylineTrackerPanelProps> = ({
                 title="单击定位正文 | 双击编辑描述"
               >
                 <AnchorDescription>{anchor.description}</AnchorDescription>
+                <DeleteButton
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm(`确定要删除剧情锚点 "${anchor.description}" 吗？`)) {
+                      onDeleteAnchor(anchor.id);
+                    }
+                  }}
+                  title="删除锚点"
+                >
+                  🗑️
+                </DeleteButton>
               </AnchorItem>
             )
           )}
