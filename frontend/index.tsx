@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useTransition } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useTransition, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, Chapter, User, TagTemplate } from './types';
@@ -45,6 +45,13 @@ const App: React.FC = () => {
   const [allUserTags, setAllUserTags] = useState<Tag[]>([]);
   const [allUserAnnotations, setAllUserAnnotations] = useState<Annotation[]>([]);
   const [tagTemplates, setTagTemplates] = useState<TagTemplate[]>(initialTagTemplates);
+
+  // 🆕 缓存已加载的小说数据，避免重复加载（缓存5分钟）
+  const novelDataCache = useRef<Map<string, {
+    tags: Tag[];
+    annotations: Annotation[];
+    timestamp: number;
+  }>>(new Map());
 
   // --- Routing ---
   useEffect(() => {
@@ -109,21 +116,28 @@ const App: React.FC = () => {
 
       setNovels(novelsData);
 
-      // 🆕 确保全局"待标注"标签存在（novelId=null的全局标签）
-      try {
-        await tagsApi.create({
-          name: PENDING_ANNOTATION_TAG_NAME,
-          color: PENDING_ANNOTATION_TAG_COLOR,
-          parentId: null,
-          novelId: null, // 全局标签
-        });
-      } catch (error) {
-        // 如果创建失败，可能是已经存在，忽略错误
-      }
+      // 🔧 只加载全局标签（novelId=null），小说标签在编辑器内按需加载
+      const globalTagsData = await tagsApi.getAll(); // 后端会返回所有标签
+      const globalTags = globalTagsData.filter(t => t.novelId === null);
+      setAllUserTags(globalTags);
 
-      // 加载所有用户的标签（全局标签 + 所有小说的标签）
-      const allUserTagsData = await tagsApi.getAll();
-      setAllUserTags(allUserTagsData);
+      // 🆕 确保全局"待标注"标签存在
+      const hasPendingTag = globalTags.some(
+        t => t.name === PENDING_ANNOTATION_TAG_NAME
+      );
+      if (!hasPendingTag) {
+        try {
+          const newPendingTag = await tagsApi.create({
+            name: PENDING_ANNOTATION_TAG_NAME,
+            color: PENDING_ANNOTATION_TAG_COLOR,
+            parentId: null,
+            novelId: null, // 全局标签
+          });
+          setAllUserTags(prev => [...prev, newPendingTag]);
+        } catch (error) {
+          console.error('创建待标注标签失败:', error);
+        }
+      }
       setAllUserAnnotations([]); // 初始为空，编辑器内加载
 
       navigateTo('#/projects');
@@ -149,6 +163,7 @@ const App: React.FC = () => {
     setNovels([]);
     setAllUserTags([]);
     setAllUserAnnotations([]);
+    novelDataCache.current.clear(); // 清空缓存
     navigateTo('#/login');
   };
 
@@ -335,6 +350,7 @@ const App: React.FC = () => {
                 onNavigateBack={() => navigateTo('#/projects')}
                 currentUser={currentUser}
                 onUpdateTagName={handleUpdateTagName}
+                novelDataCache={novelDataCache}
               />
             );
           }
@@ -365,5 +381,6 @@ const App: React.FC = () => {
 const container = document.getElementById('root');
 if (container) {
   const root = createRoot(container);
-  root.render(<React.StrictMode><App /></React.StrictMode>);
+  // 🔧 生产环境禁用 StrictMode，避免重复加载和性能问题
+  root.render(<App />);
 }

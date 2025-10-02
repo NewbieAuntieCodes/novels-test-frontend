@@ -24,6 +24,11 @@ interface NovelEditorPageProps {
   onNavigateBack: () => void;
   currentUser: User;
   onUpdateTagName: (tagId: string, newName: string) => void;
+  novelDataCache?: React.MutableRefObject<Map<string, {
+    tags: Tag[];
+    annotations: Annotation[];
+    timestamp: number;
+  }>>;
 }
 
 export type EditorMode = 'edit' | 'annotation' | 'read' | 'storyline'; 
@@ -145,109 +150,150 @@ const ResizerIcon = styled.span`
 
 const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   novel, allUserTags, allUserAnnotations, setNovels, setAllUserTags, setAllUserAnnotations,
-  onNavigateBack, currentUser, onUpdateTagName
+  onNavigateBack, currentUser, onUpdateTagName, novelDataCache
 }) => {
   const mainContentAreaRef = useRef<HTMLDivElement>(null);
   const [editorMode, setEditorMode] = useState<EditorMode>('annotation');
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
   const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
 
-  // 🆕 记录当前小说ID，用于清理时知道要清理哪个小说
-  const currentNovelIdRef = useRef<string>(novel.id);
-
   // 🆕 进入编辑器时加载小说全文、标签和标注
   useEffect(() => {
     const loadNovelData = async () => {
       try {
+        const startTime = performance.now();
+        console.log('[NovelEditor] 开始加载小说数据:', novel.id);
+
+        // 🔧 先清理其他小说的数据，只保留全局数据和当前小说数据
+        setAllUserTags(prev => prev.filter(t => t.novelId === null || t.novelId === novel.id));
+        setAllUserAnnotations(prev => prev.filter(a => a.novelId === novel.id));
+
+        // ✅ 检查缓存（5分钟内有效）
+        const CACHE_TTL = 5 * 60 * 1000; // 5分钟
+        const cached = novelDataCache?.current.get(novel.id);
+        if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+          console.log('[NovelEditor] ✅ 使用缓存数据，跳过加载');
+          // 从缓存恢复数据（只需要补充，因为上面已经过滤过了）
+          setAllUserTags(prev => {
+            const globalTags = prev.filter(t => t.novelId === null);
+            const currentNovelTags = prev.filter(t => t.novelId === novel.id);
+            // 如果当前小说标签为空，才从缓存恢复
+            if (currentNovelTags.length === 0) {
+              return [...globalTags, ...cached.tags];
+            }
+            return prev;
+          });
+          setAllUserAnnotations(prev => {
+            // 如果当前小说标注为空，才从缓存恢复
+            if (prev.length === 0) {
+              return cached.annotations;
+            }
+            return prev;
+          });
+          return;
+        }
+
+        // ✅ 检查本地状态缓存（同一会话内）
+        const currentNovelTags = allUserTags.filter(t => t.novelId === novel.id);
+        const currentNovelAnnotations = allUserAnnotations.filter(a => a.novelId === novel.id);
+        if (loadedAnnotationsForNovelIds.has(novel.id) && currentNovelTags.length > 0 && currentNovelAnnotations.length > 0) {
+          console.log('[NovelEditor] ✅ 该小说数据已在本地缓存，跳过加载');
+          return;
+        }
+
         setIsLoadingNovelData(true);
 
         // 1. 如果小说全文为空，加载全文
         if (!novel.text || novel.text.trim() === '') {
+          console.log('[NovelEditor] 加载小说全文...');
+          const t1 = performance.now();
           const fullNovel = await novelsApi.getById(novel.id);
+          console.log('[NovelEditor] 小说全文加载完成，耗时:', (performance.now() - t1).toFixed(2), 'ms');
           setNovels(prev => prev.map(n => n.id === novel.id ? fullNovel : n));
         }
 
         // 2. 🆕 加载该小说的标签 + 全局标签
+        console.log('[NovelEditor] 加载标签...');
+        const t2 = performance.now();
         const [novelTags, allTags] = await Promise.all([
           tagsApi.getAll({ novelId: novel.id }),  // 该小说的标签
           tagsApi.getAll()                         // 所有标签（用于获取全局标签）
         ]);
+        const t2_1 = performance.now();
+        console.log('[NovelEditor] API 调用完成，耗时:', (t2_1 - t2).toFixed(2), 'ms');
+        console.log('[NovelEditor] 返回的标签数量 - 小说:', novelTags.length, '全部:', allTags.length);
 
+        const t2_2 = performance.now();
         const globalTags = allTags.filter(t => t.novelId === null); // 筛选全局标签
+        console.log('[NovelEditor] 筛选全局标签完成，耗时:', (performance.now() - t2_2).toFixed(2), 'ms', '数量:', globalTags.length);
 
-        setAllUserTags(prev => {
-          // 移除旧的该小说标签和全局标签，然后添加新的
-          const otherNovelTags = prev.filter(t => t.novelId !== novel.id && t.novelId !== null);
-
-          // 使用 Set 去重，避免重复的标签
-          const allTagsMap = new Map<string, Tag>();
-          [...otherNovelTags, ...globalTags, ...novelTags].forEach(tag => {
-            allTagsMap.set(tag.id, tag);
-          });
-
-          return Array.from(allTagsMap.values());
+        // 🔧 只保留当前小说的标签和全局标签，删除其他小说的标签
+        const t2_3 = performance.now();
+        const allTagsMap = new Map<string, Tag>();
+        [...globalTags, ...novelTags].forEach(tag => {
+          allTagsMap.set(tag.id, tag);
         });
+        console.log('[NovelEditor] 构建标签Map完成，耗时:', (performance.now() - t2_3).toFixed(2), 'ms', '总数:', allTagsMap.size);
+        console.log('[NovelEditor] 标签加载完成，总耗时:', (performance.now() - t2).toFixed(2), 'ms');
 
-        // 3. 如果该小说的标注未加载过，从后端加载
-        if (!loadedAnnotationsForNovelIds.has(novel.id)) {
-          const annotationsData = await annotationsApi.getAll({ novelId: novel.id });
+        // 3. 从后端加载当前小说的标注
+        console.log('[NovelEditor] 加载标注...');
+        const t3 = performance.now();
+        const annotationsData = await annotationsApi.getAll({ novelId: novel.id });
+        console.log('[NovelEditor] 标注加载完成，耗时:', (performance.now() - t3).toFixed(2), 'ms', '数量:', annotationsData.length);
 
-          // 后端已经返回了正确的格式,包含 tagIds 字段
-          const formattedAnnotations = annotationsData.map((ann: any) => ({
-            id: ann.id,
-            tagIds: ann.tagIds || [], // 后端已经有 tagIds 字段
-            text: ann.text,
-            startIndex: ann.startIndex,
-            endIndex: ann.endIndex,
-            novelId: ann.novelId,
-            userId: ann.userId,
-            isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
-          }));
+        // 后端已经返回了正确的格式,包含 tagIds 字段
+        const formattedAnnotations = annotationsData.map((ann: any) => ({
+          id: ann.id,
+          tagIds: ann.tagIds || [], // 后端已经有 tagIds 字段
+          text: ann.text,
+          startIndex: ann.startIndex,
+          endIndex: ann.endIndex,
+          novelId: ann.novelId,
+          userId: ann.userId,
+          isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
+        }));
 
-          setAllUserAnnotations(prev => {
-            // 移除该小说的旧标注，添加新加载的标注
-            const withoutCurrentNovel = prev.filter(a => a.novelId !== novel.id);
-            return [...withoutCurrentNovel, ...formattedAnnotations];
+        // 批量更新状态
+        const t4 = performance.now();
+        console.log('[NovelEditor] 开始更新状态...');
+        setAllUserTags(Array.from(allTagsMap.values()));
+        console.log('[NovelEditor] setAllUserTags 完成，耗时:', (performance.now() - t4).toFixed(2), 'ms');
+
+        const t5 = performance.now();
+        setAllUserAnnotations(formattedAnnotations);
+        console.log('[NovelEditor] setAllUserAnnotations 完成，耗时:', (performance.now() - t5).toFixed(2), 'ms');
+
+        setLoadedAnnotationsForNovelIds(prev => new Set([...prev, novel.id]));
+
+        // 🆕 保存到缓存
+        if (novelDataCache) {
+          novelDataCache.current.set(novel.id, {
+            tags: Array.from(allTagsMap.values()).filter(t => t.novelId === novel.id),
+            annotations: formattedAnnotations,
+            timestamp: Date.now(),
           });
-
-          setLoadedAnnotationsForNovelIds(prev => new Set(prev).add(novel.id));
+          console.log('[NovelEditor] 数据已保存到缓存');
         }
+
+        const endTime = performance.now();
+        console.log('[NovelEditor] ✅ 全部加载完成，总耗时:', (endTime - startTime).toFixed(2), 'ms');
+
+        // 数据更新完成后才关闭 loading，避免中间状态渲染
+        const t6 = performance.now();
+        setIsLoadingNovelData(false);
+        console.log('[NovelEditor] setIsLoadingNovelData(false) 完成，耗时:', (performance.now() - t6).toFixed(2), 'ms');
       } catch (error) {
-        console.error('加载小说数据错误:', error);
+        console.error('❌ 加载小说数据错误:', error);
         alert('加载小说数据失败，请刷新重试');
-      } finally {
         setIsLoadingNovelData(false);
       }
     };
 
     loadNovelData();
-  }, [novel.id]); // 只在 novelId 变化时执行
+  }, [novel.id]); // ✅ 只依赖 novel.id，避免无限循环
 
-  // 🆕 更新当前小说ID引用
-  useEffect(() => {
-    currentNovelIdRef.current = novel.id;
-  }, [novel.id]);
-
-  // 🆕 组件卸载时清理当前小说的数据，避免内存累积
-  useEffect(() => {
-    return () => {
-      const novelIdToClean = currentNovelIdRef.current;
-      console.log('[NovelEditor] 清理小说数据:', novelIdToClean);
-
-      // 清理标注
-      setAllUserAnnotations(prev => prev.filter(a => a.novelId !== novelIdToClean));
-
-      // 清理标签（保留全局标签）
-      setAllUserTags(prev => prev.filter(t => t.novelId !== novelIdToClean));
-
-      // 从已加载集合中移除，下次打开时重新加载
-      setLoadedAnnotationsForNovelIds(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(novelIdToClean);
-        return newSet;
-      });
-    };
-  }, [setAllUserAnnotations, setAllUserTags]);
+  // ✅ 移除组件卸载时的数据清理逻辑，保留缓存以加快重新打开速度
   
   const editorState = useNovelEditorState({
     novel,

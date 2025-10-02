@@ -5,6 +5,7 @@ import { CreateTagRequest, UpdateTagRequest } from '../types';
 // 获取所有标签（可按小说ID筛选）
 export const getTags = async (req: Request, res: Response): Promise<void> => {
   try {
+    const startTime = Date.now();
     const userId = req.user!.id;
     const { novelId } = req.query;
 
@@ -15,10 +16,13 @@ export const getTags = async (req: Request, res: Response): Promise<void> => {
       where.novelId = novelId as string;
     }
 
+    console.log(`[getTags] 开始查询 userId=${userId}, novelId=${novelId || 'all'}`);
     const tags = await prisma.tag.findMany({
       where,
       orderBy: { createdAt: 'asc' },
     });
+    const duration = Date.now() - startTime;
+    console.log(`[getTags] 查询完成，耗时: ${duration}ms, 返回数量: ${tags.length}`);
 
     res.json(tags);
   } catch (error) {
@@ -51,13 +55,12 @@ export const createTag = async (req: Request, res: Response): Promise<void> => {
     }
 
     // 检查是否已存在同名标签（同一小说中不能有重复标签名）
-    const existingTag = await prisma.tag.findUnique({
+    // 🔧 Prisma 的 findUnique 不支持 null 值在复合键中，所以使用 findFirst
+    const existingTag = await prisma.tag.findFirst({
       where: {
-        userId_novelId_name: {
-          userId,
-          novelId: novelId || null,
-          name,
-        },
+        userId,
+        novelId: novelId || null,
+        name,
       },
     });
 
@@ -114,13 +117,12 @@ export const updateTag = async (req: Request, res: Response): Promise<void> => {
 
     // 如果修改名称，检查新名称是否已被使用（同一小说中）
     if (name && name !== existingTag.name) {
-      const duplicateTag = await prisma.tag.findUnique({
+      // 🔧 Prisma 的 findUnique 不支持 null 值在复合键中，所以使用 findFirst
+      const duplicateTag = await prisma.tag.findFirst({
         where: {
-          userId_novelId_name: {
-            userId,
-            novelId: existingTag.novelId,
-            name,
-          },
+          userId,
+          novelId: existingTag.novelId,
+          name,
         },
       });
 

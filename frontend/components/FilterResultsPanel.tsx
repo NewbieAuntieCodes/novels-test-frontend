@@ -1,7 +1,7 @@
-import React, { CSSProperties } from 'react';
+import React, { CSSProperties, useMemo } from 'react';
 import styled from '@emotion/styled';
 import type { Annotation, Tag } from '../types';
-import { getContrastingTextColor, getAllAncestorTagIds } from '../utils'; 
+import { getContrastingTextColor, getAllAncestorTagIds } from '../utils';
 import { COLORS, SPACING, FONTS, globalPlaceholderTextStyles, panelStyles } from "../styles";
 
 interface FilterResultsPanelProps {
@@ -135,11 +135,46 @@ const TagPill = styled.span`
 
 const Placeholder = styled.div(globalPlaceholderTextStyles);
 
-const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({ 
+const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
   annotations, getTagById, activeFilterTag, style, globalFilterTagName,
   onTagClick, onTagDoubleClick, allUserTags, onDeleteAnnotation
 }) => {
-  
+
+  // ✅ 缓存根节点映射和深度映射，避免每次渲染重复计算
+  const { rootIdCache, depthCache } = useMemo(() => {
+    const rootCache = new Map<string, string>();
+    const depthCacheMap = new Map<string, number>();
+
+    const getRootId = (tagId: string): string => {
+      if (rootCache.has(tagId)) return rootCache.get(tagId)!;
+
+      let currentTag = allUserTags.find(t => t.id === tagId);
+      if (!currentTag) return tagId;
+
+      const path: string[] = [tagId];
+      while (currentTag.parentId) {
+        const parent = allUserTags.find(t => t.id === currentTag.parentId);
+        if (!parent) break;
+        path.push(parent.id);
+        currentTag = parent;
+      }
+
+      const rootId = currentTag.id;
+      // 缓存路径上的所有节点
+      path.forEach(id => rootCache.set(id, rootId));
+
+      return rootId;
+    };
+
+    // 预计算所有标签的根节点和深度
+    allUserTags.forEach(tag => {
+      getRootId(tag.id);
+      depthCacheMap.set(tag.id, getAllAncestorTagIds(tag.id, allUserTags).length);
+    });
+
+    return { rootIdCache: rootCache, depthCache: depthCacheMap };
+  }, [allUserTags]);
+
   const panelTitleContent = () => {
     if (globalFilterTagName) {
       return (
@@ -182,20 +217,10 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
               .map(id => getTagById(id))
               .filter((t): t is Tag => !!t);
 
-            const getRootId = (tagId: string): string => {
-              let currentTag = allUserTags.find(t => t.id === tagId);
-              if (!currentTag) return tagId;
-              while (currentTag.parentId) {
-                const parent = allUserTags.find(t => t.id === currentTag.parentId);
-                if (!parent) break;
-                currentTag = parent;
-              }
-              return currentTag.id;
-            };
-
+            // ✅ 使用缓存的根节点映射
             const tagsByRoot = new Map<string, Tag[]>();
             tagsForAnnotation.forEach(tag => {
-              const rootId = getRootId(tag.id);
+              const rootId = rootIdCache.get(tag.id) || tag.id;
               if (!tagsByRoot.has(rootId)) {
                 tagsByRoot.set(rootId, []);
               }
@@ -204,9 +229,12 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
 
             const tagGroups = Array.from(tagsByRoot.values());
 
+            // ✅ 使用缓存的根节点映射进行排序
             tagGroups.sort((groupA, groupB) => {
-              const rootA = allUserTags.find(t => t.id === getRootId(groupA[0].id));
-              const rootB = allUserTags.find(t => t.id === getRootId(groupB[0].id));
+              const rootIdA = rootIdCache.get(groupA[0].id) || groupA[0].id;
+              const rootIdB = rootIdCache.get(groupB[0].id) || groupB[0].id;
+              const rootA = allUserTags.find(t => t.id === rootIdA);
+              const rootB = allUserTags.find(t => t.id === rootIdB);
               return (rootA?.name || '').localeCompare(rootB?.name || '');
             });
 
@@ -215,10 +243,11 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
                 <AnnotationText>"{ann.text || '[无文本内容]'}"</AnnotationText>
                 <AnnotationTagsContainer>
                   {tagGroups.map((group, index) => {
+                    // ✅ 使用缓存的深度映射
                     const sortedGroup = group
                       .map(tag => ({
                         ...tag,
-                        depth: getAllAncestorTagIds(tag.id, allUserTags).length
+                        depth: depthCache.get(tag.id) || 0
                       }))
                       .sort((a, b) => {
                         if (a.depth !== b.depth) {

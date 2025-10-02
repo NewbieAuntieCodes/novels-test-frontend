@@ -301,6 +301,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
+  const [isComputing, setIsComputing] = useState(false);
 
   const anchorRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -362,9 +363,18 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     return cache;
   }, [allNovelTags]);
 
-  const displayedContentOrSnippets = useMemo(() => {
-    // --- STORYLINE MODE RENDERER ---
-    if (editorMode === 'storyline') {
+  // 🆕 缓存标签层级关系，避免重复计算
+  const tagHierarchyCache = useMemo(() => {
+    const descendantsMap = new Map<string, Set<string>>();
+    allNovelTags.forEach(tag => {
+      descendantsMap.set(tag.id, new Set(getAllDescendantTagIds(tag.id, allNovelTags)));
+    });
+    return descendantsMap;
+  }, [allNovelTags]);
+
+  // ✅ 拆分 storyline 渲染逻辑，减少不必要的重新计算
+  const storylineContent = useMemo(() => {
+    if (editorMode !== 'storyline') return null;
       const text = textForPreview;
       const paragraphs = text.split('\n');
       let charIndex = displayOffsetForPreview;
@@ -428,11 +438,11 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           })}
         </div>
       );
-    }
-    
-    // --- OTHER MODES RENDERER (ANNOTATION, READ) ---
+  }, [editorMode, textForPreview, displayOffsetForPreview, novel.plotAnchors, novel.storylines]);
 
-    if (viewMode === 'snippet') {
+  // ✅ 拆分 snippet 渲染逻辑
+  const snippetContent = useMemo(() => {
+    if (editorMode === 'storyline' || viewMode !== 'snippet') return null;
       let snippets: { id: string; text: string; tags: Tag[]; originalAnnotationId: string; isPotentiallyMisaligned?: boolean; sourceNovelId?: string; sourceNovelTitle?: string; }[] = [];
       
       if (globalFilterTagName) {
@@ -458,7 +468,9 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         if (snippets.length === 0) return <Placeholder>在 "{novel.title}" 中未找到与 "{globalFilterTagName}" 相关的标注。</Placeholder>;
 
       } else if (activeFilterTagDetails) {
-        const tagAndDescendantIds = new Set([activeFilterTagDetails.id, ...getAllDescendantTagIds(activeFilterTagDetails.id, allNovelTags)]);
+        // 使用缓存的层级关系
+        const descendants = tagHierarchyCache.get(activeFilterTagDetails.id) || new Set();
+        const tagAndDescendantIds = new Set([activeFilterTagDetails.id, ...descendants]);
 
         snippets = annotations
           .filter(ann => ann.tagIds.some(tid => tagAndDescendantIds.has(tid)))
@@ -530,7 +542,17 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           })}
         </React.Fragment>
       );
-    }
+  }, [viewMode, editorMode, globalFilterTagName, activeFilterTagDetails, annotations, allNovelTags, tagDepthCache, tagHierarchyCache, novel.title, onDeleteAnnotation]);
+
+  const displayedContentOrSnippets = useMemo(() => {
+    // Trigger computing state for heavy calculations
+    setIsComputing(true);
+
+    // Return pre-computed storyline content
+    if (storylineContent) return storylineContent;
+
+    // Return pre-computed snippet content
+    if (snippetContent) return snippetContent;
 
     const currentDisplayText = textForPreview;
     if (!currentDisplayText.trim() && (editorMode === 'read' || (editorMode === 'edit' && !novel.text && !selectedChapter))) {
@@ -584,11 +606,10 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         const activeFilterTagId = activeFilterTagDetails?.id;
 
         if (activeFilterTagId) {
-            const activeHierarchyTagIds = new Set([
-                activeFilterTagId,
-                ...getAllDescendantTagIds(activeFilterTagId, allNovelTags)
-            ]);
-            
+            // 使用缓存的层级关系
+            const descendants = tagHierarchyCache.get(activeFilterTagId) || new Set();
+            const activeHierarchyTagIds = new Set([activeFilterTagId, ...descendants]);
+
             const contextualTags = annotationTagsInvolved.filter(t => activeHierarchyTagIds.has(t.id));
 
             if (contextualTags.length > 0) {
@@ -630,13 +651,13 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       const tagNames = annotationTagsInvolved.map(t => t.name).join(' | ');
       const bgColor = primaryTagForHighlight?.color || COLORS.gray300;
       const color = primaryTagForHighlight ? getContrastingTextColor(primaryTagForHighlight.color) : COLORS.black;
-      
-      const title = ann.isPotentiallyMisaligned ? `标签: ${tagNames} (此标注可能已错位)` 
+
+      const title = ann.isPotentiallyMisaligned ? `标签: ${tagNames} (此标注可能已错位)`
         : `标签: ${tagNames}`;
 
       parts.push(
         <AnnotatedSpan
-          key={`${ann.id}-${ann.startIndex}-${ann.tagIds.join('-')}`}
+          key={ann.id}
           style={{ backgroundColor: bgColor, color: color }}
           isMisaligned={ann.isPotentiallyMisaligned}
           title={title}
@@ -650,15 +671,24 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     if (lastIndex < currentDisplayText.length) {
       parts.push(currentDisplayText.substring(lastIndex));
     }
-    
-    return parts.map((part, i) => <React.Fragment key={`part-${i}`}>{part}</React.Fragment>);
+
+    return <>{parts}</>;
   }, [
-    viewMode, activeFilterTagDetails, globalFilterTagName,
-    allNovelTags, tagDepthCache,
-    textForPreview, annotations, getTagById, displayOffsetForPreview, selectedChapter,
-    onDeleteAnnotation, editorMode, novel.text, novel.id, novel.title,
-    novel.plotAnchors, novel.storylines // Storyline dependencies
+    storylineContent, snippetContent, editorMode, viewMode,
+    textForPreview, annotations, getTagById, displayOffsetForPreview,
+    activeFilterTagDetails, allNovelTags, tagDepthCache, tagHierarchyCache, selectedChapter, novel.text
   ]);
+
+  // Reset computing state after render
+  useEffect(() => {
+    if (isComputing) {
+      // Use setTimeout to ensure the loading state is visible
+      const timer = setTimeout(() => {
+        setIsComputing(false);
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [displayedContentOrSnippets, isComputing]);
 
   const panelTitle = useMemo(() => {
     if (editorMode === 'edit') {
@@ -722,14 +752,14 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
       {(editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && (
         <ContentPreviewContainer>
-          <ContentDisplay 
-            id="content-display-area" 
+          <ContentDisplay
+            id="content-display-area"
             onMouseUp={editorMode === 'annotation' ? onTextSelection : undefined}
             role="article"
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}
           >
-            {displayedContentOrSnippets}
+            {isComputing ? <Placeholder>正在加载内容...</Placeholder> : displayedContentOrSnippets}
           </ContentDisplay>
         </ContentPreviewContainer>
       )}
