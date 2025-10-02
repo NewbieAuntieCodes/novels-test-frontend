@@ -269,6 +269,7 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
   const [newNovelTitle, setNewNovelTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   const handleCreate = () => {
     if (newNovelTitle.trim()) {
@@ -283,24 +284,34 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     }
   };
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       if (file.type === "text/plain") {
         const reader = new FileReader();
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
           const text = e.target?.result as string;
           const titleFromFile = file.name.replace(/\.[^/.]+$/, "");
           if (text !== null && text !== undefined) {
-            const newNovelId = onUploadNovel(titleFromFile || "未命名小说", text);
-            if (newNovelId) {
-              onSelectNovel(newNovelId);
+            try {
+              setIsUploading(true);
+              const newNovelId = await onUploadNovel(titleFromFile || "未命名小说", text);
+              if (newNovelId) {
+                onSelectNovel(newNovelId);
+              }
+            } catch (error) {
+              console.error("上传失败:", error);
+            } finally {
+              setIsUploading(false);
             }
           } else {
             alert("文件内容为空或读取失败。");
           }
         };
-        reader.onerror = () => alert("读取文件时出错。");
+        reader.onerror = () => {
+          alert("读取文件时出错。");
+          setIsUploading(false);
+        };
         reader.readAsText(file);
       } else {
         alert("请上传 .txt 格式的文本文件。");
@@ -377,8 +388,9 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
               type="button"
               onClick={() => document.getElementById('novel-file-input-projects')?.click()}
               aria-label="上传小说文件"
+              disabled={isUploading}
             >
-              上传小说 (.txt)
+              {isUploading ? '上传中，请稍候...' : '上传小说 (.txt)'}
             </UploadButton>
             <GlobalTagSearchButton
               type="button"

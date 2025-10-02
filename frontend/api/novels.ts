@@ -1,6 +1,6 @@
 // 小说相关 API
 import { apiRequest } from './config';
-import type { Novel } from '../types';
+import type { Novel, Chapter, Annotation } from '../types';
 
 interface NovelCreateRequest {
   title: string;
@@ -10,8 +10,13 @@ interface NovelCreateRequest {
   plotAnchors?: any[];
 }
 
+interface ChapterContentResponse {
+  chapter: Chapter & { content: string };
+  annotations: Annotation[];
+}
+
 export const novelsApi = {
-  // 获取所有小说
+  // 获取所有小说（不含全文）
   async getAll(): Promise<Novel[]> {
     return apiRequest<Novel[]>('/novels');
   },
@@ -19,6 +24,11 @@ export const novelsApi = {
   // 获取单个小说
   async getById(id: string): Promise<Novel> {
     return apiRequest<Novel>(`/novels/${id}`);
+  },
+
+  // 🆕 获取章节内容和标注
+  async getChapterContent(novelId: string, chapterId: string): Promise<ChapterContentResponse> {
+    return apiRequest<ChapterContentResponse>(`/novels/${novelId}/chapters/${chapterId}`);
   },
 
   // 创建小说

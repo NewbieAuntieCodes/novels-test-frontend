@@ -1,4 +1,4 @@
-import React, { useState, useRef, CSSProperties } from 'react';
+import React, { useState, useRef, useEffect, CSSProperties } from 'react';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, User } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, panelStyles as basePanelStyles } from '../../styles';
@@ -11,6 +11,7 @@ import { usePanelResizer, MIN_PANEL_PERCENTAGE } from './hooks/usePanelResizer';
 import { useNovelEditorState } from './hooks/useNovelEditorState';
 import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
+import { novelsApi, annotationsApi } from '../../api';
 
 
 interface NovelEditorPageProps {
@@ -143,11 +144,72 @@ const ResizerIcon = styled.span`
 `;
 
 const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
-  novel, allUserTags, allUserAnnotations, setNovels, setAllUserTags, setAllUserAnnotations, 
+  novel, allUserTags, allUserAnnotations, setNovels, setAllUserTags, setAllUserAnnotations,
   onNavigateBack, currentUser, onUpdateTagName
 }) => {
   const mainContentAreaRef = useRef<HTMLDivElement>(null);
-  const [editorMode, setEditorMode] = useState<EditorMode>('annotation'); 
+  const [editorMode, setEditorMode] = useState<EditorMode>('annotation');
+  const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
+
+  // 🆕 进入编辑器时加载小说全文和标注
+  useEffect(() => {
+    const loadNovelData = async () => {
+      try {
+        setIsLoadingNovelData(true);
+
+        // 1. 如果小说全文为空，加载全文
+        if (!novel.text || novel.text.trim() === '') {
+          const fullNovel = await novelsApi.getById(novel.id);
+          setNovels(prev => prev.map(n => n.id === novel.id ? fullNovel : n));
+        }
+
+        // 2. 如果标注为空，只加载该小说的标注（不加载全部）
+        const novelAnnotations = allUserAnnotations.filter(a => a.novelId === novel.id);
+        if (novelAnnotations.length === 0) {
+          // ✅ 修复：只请求当前小说的标注
+          const token = localStorage.getItem('authToken'); // ✅ 修正：应该是 authToken
+          const response = await fetch(`http://localhost:3001/api/annotations?novelId=${novel.id}`, {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error(`加载标注失败: ${response.status} ${response.statusText}`);
+          }
+
+          const data = await response.json();
+
+          // 检查是否是数组
+          if (!Array.isArray(data)) {
+            console.error('标注数据格式错误:', data);
+            throw new Error('标注数据格式错误');
+          }
+
+          // 转换后端返回的标注格式
+          const formattedAnnotations = data.map((ann: any) => ({
+            id: ann.id,
+            tagIds: ann.tags.map((t: any) => t.tagId),
+            text: ann.text,
+            startIndex: ann.startIndex,
+            endIndex: ann.endIndex,
+            novelId: ann.novelId,
+            userId: ann.userId,
+          }));
+
+          setAllUserAnnotations(prev => [...prev, ...formattedAnnotations]);
+        }
+      } catch (error) {
+        console.error('加载小说数据错误:', error);
+        alert('加载小说数据失败，请刷新重试');
+      } finally {
+        setIsLoadingNovelData(false);
+      }
+    };
+
+    loadNovelData();
+  }, [novel.id]); // 只在 novelId 变化时执行 
   
   const editorState = useNovelEditorState({
     novel,
@@ -172,6 +234,24 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   });
 
   const contentPanelViewMode = (editorMode === 'read' && (editorState.activeTagId || editorState.globalFilterTagName)) ? 'snippet' : 'full';
+
+  // 加载中状态
+  if (isLoadingNovelData) {
+    return (
+      <EditorPageContainer>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          height: '100%',
+          fontSize: '1.2em',
+          color: COLORS.textLight
+        }}>
+          正在加载小说数据...
+        </div>
+      </EditorPageContainer>
+    );
+  }
 
   return (
     <EditorPageContainer>

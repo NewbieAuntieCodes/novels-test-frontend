@@ -6,6 +6,7 @@ import {
   createNovel,
   updateNovel,
   deleteNovel,
+  getChapterContent,
 } from '../controllers/novelController';
 
 const router = Router();
@@ -15,6 +16,7 @@ router.use(authenticate);
 
 router.get('/', getNovels);
 router.get('/:id', getNovel);
+router.get('/:novelId/chapters/:chapterId', getChapterContent); // 🆕 获取章节内容
 router.post('/', createNovel);
 router.put('/:id', updateNovel);
 router.delete('/:id', deleteNovel);

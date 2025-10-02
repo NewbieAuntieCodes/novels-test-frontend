@@ -1,8 +1,9 @@
 import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 import { CreateNovelRequest, UpdateNovelRequest } from '../types';
+import { splitTextIntoChapters } from '../utils/chapterSplitter';
 
-// 获取所有小说
+// 获取所有小说（只返回元数据，不含全文）
 export const getNovels = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
@@ -10,9 +11,26 @@ export const getNovels = async (req: Request, res: Response): Promise<void> => {
     const novels = await prisma.novel.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        title: true,
+        chapters: true,  // 只返回章节元数据
+        storylines: true,
+        plotAnchors: true,
+        userId: true,
+        createdAt: true,
+        updatedAt: true,
+        // 不返回 text 字段（全文）
+      },
     });
 
-    res.json(novels);
+    // 添加空 text 占位符（保持前端类型兼容）
+    const novelsWithPlaceholder = novels.map(novel => ({
+      ...novel,
+      text: '', // 空字符串占位，打开编辑器时再加载
+    }));
+
+    res.json(novelsWithPlaceholder);
   } catch (error) {
     console.error('获取小说列表错误:', error);
     res.status(500).json({ error: '获取小说列表失败' });
@@ -55,11 +73,14 @@ export const createNovel = async (req: Request, res: Response): Promise<void> =>
     // 标准化换行符
     const normalizedText = text.replace(/\r\n|\r/g, '\n');
 
+    // 如果前端没有提供章节，后端自动分章（性能优化）
+    const finalChapters = chapters || splitTextIntoChapters(normalizedText);
+
     const novel = await prisma.novel.create({
       data: {
         title,
         text: normalizedText,
-        chapters: chapters || null,
+        chapters: finalChapters as any,
         storylines: storylines || null,
         plotAnchors: plotAnchors || null,
         userId,
@@ -135,5 +156,63 @@ export const deleteNovel = async (req: Request, res: Response): Promise<void> =>
   } catch (error) {
     console.error('删除小说错误:', error);
     res.status(500).json({ error: '删除小说失败' });
+  }
+};
+
+// 🆕 获取单章内容和该章的标注
+export const getChapterContent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { novelId, chapterId } = req.params;
+    const userId = req.user!.id;
+
+    // 1. 验证小说所有权
+    const novel = await prisma.novel.findFirst({
+      where: { id: novelId, userId },
+      select: { text: true, chapters: true },
+    });
+
+    if (!novel) {
+      res.status(404).json({ error: '小说不存在' });
+      return;
+    }
+
+    // 2. 从 chapters JSON 中找到目标章节
+    const chapters = novel.chapters as any[];
+    const chapter = chapters?.find((ch: any) => ch.id === chapterId);
+
+    if (!chapter) {
+      res.status(404).json({ error: '章节不存在' });
+      return;
+    }
+
+    // 3. 提取该章节的文本内容
+    const chapterText = novel.text.substring(
+      chapter.originalStartIndex,
+      chapter.originalEndIndex
+    );
+
+    // 4. 查询该章节的标注（通过索引范围筛选）
+    const annotations = await prisma.annotation.findMany({
+      where: {
+        novelId,
+        userId,
+        startIndex: {
+          gte: chapter.originalStartIndex,
+          lt: chapter.originalEndIndex,
+        },
+      },
+      orderBy: { startIndex: 'asc' },
+    });
+
+    res.json({
+      chapter: {
+        ...chapter,
+        content: chapterText,
+      },
+      annotations,
+    });
+  } catch (error) {
+    console.error('获取章节内容错误:', error);
+    res.status(500).json({ error: '获取章节内容失败' });
   }
 };

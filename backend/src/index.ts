@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
 import novelRoutes from './routes/novels';
@@ -11,8 +12,9 @@ const PORT = process.env.PORT || 3001;
 
 // 中间件
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // 支持大文本上传
-app.use(express.urlencoded({ extended: true }));
+app.use(compression()); // ✅ gzip压缩响应，加速传输
+app.use(express.json({ limit: '100mb' })); // 支持大型小说上传（几千章）
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // 健康检查路由
 app.get('/health', (req, res) => {

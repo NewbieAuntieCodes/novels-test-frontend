@@ -79,10 +79,14 @@ export const useNovelEditorState = ({
 
   useEffect(() => {
     if (novel.chapters && novel.chapters.length > 0) {
-      if (selectedChapterId && !novel.chapters.find(c => c.id === selectedChapterId)) {
-        setSelectedChapterId(null); 
+      // ✅ 修复：如果没有选中章节，默认选中第一章（避免渲染整本小说）
+      if (!selectedChapterId) {
+        const sortedChapters = [...novel.chapters].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+        setSelectedChapterId(sortedChapters[0].id);
+      } else if (!novel.chapters.find(c => c.id === selectedChapterId)) {
+        setSelectedChapterId(null);
       }
-    } else if (selectedChapterId) { 
+    } else if (selectedChapterId) {
        setSelectedChapterId(null);
     }
   }, [novel.chapters, selectedChapterId]);

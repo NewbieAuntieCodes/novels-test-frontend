@@ -353,13 +353,22 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   }, [selectedChapter, viewMode, editorMode]);
 
 
+  // 缓存标签深度计算，避免重复计算
+  const tagDepthCache = useMemo(() => {
+    const cache = new Map<string, number>();
+    allNovelTags.forEach(tag => {
+      cache.set(tag.id, getAllAncestorTagIds(tag.id, allNovelTags).length);
+    });
+    return cache;
+  }, [allNovelTags]);
+
   const displayedContentOrSnippets = useMemo(() => {
     // --- STORYLINE MODE RENDERER ---
     if (editorMode === 'storyline') {
       const text = textForPreview;
       const paragraphs = text.split('\n');
       let charIndex = displayOffsetForPreview;
-      
+
       const plotAnchors = novel.plotAnchors || [];
       const storylines = novel.storylines || [];
       const storylineMap = new Map(storylines.map(s => [s.id, s]));
@@ -479,7 +488,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                 let candidateTags: Tag[] = [];
 
                 for (const tag of snippet.tags) {
-                    const depth = getAllAncestorTagIds(tag.id, allNovelTags).length;
+                    const depth = tagDepthCache.get(tag.id) ?? 0;
                     if (depth > deepestLevel) {
                         deepestLevel = depth;
                         candidateTags = [tag];
@@ -529,13 +538,16 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       return <Placeholder>{placeholderMsg}</Placeholder>;
     }
     
-    const relevantAnnotations = annotations 
+    // 限制一次渲染的标注数量，提升性能
+    const MAX_ANNOTATIONS_TO_RENDER = 500;
+    const relevantAnnotations = annotations
       .filter(ann => {
         const annStartInView = ann.startIndex - displayOffsetForPreview;
         const annEndInView = ann.endIndex - displayOffsetForPreview;
         return annEndInView > 0 && annStartInView < currentDisplayText.length;
       })
-      .sort((a, b) => a.startIndex - b.startIndex);
+      .sort((a, b) => a.startIndex - b.startIndex)
+      .slice(0, MAX_ANNOTATIONS_TO_RENDER);
 
     if (relevantAnnotations.length === 0 && currentDisplayText.trim()) {
          return <span>{currentDisplayText}</span>;
@@ -581,7 +593,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                 let deepestLevel = -1;
                 const deepestContextualTags: Tag[] = [];
                 for (const tag of contextualTags) {
-                    const depth = getAllAncestorTagIds(tag.id, allNovelTags).length;
+                    const depth = tagDepthCache.get(tag.id) ?? 0;
                     if (depth > deepestLevel) {
                         deepestLevel = depth;
                         deepestContextualTags.length = 0;
@@ -590,8 +602,8 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                         deepestContextualTags.push(tag);
                     }
                 }
-                primaryTagForHighlight = deepestContextualTags.length > 0 
-                    ? [...deepestContextualTags].sort((a, b) => a.name.localeCompare(b.name))[0] 
+                primaryTagForHighlight = deepestContextualTags.length > 0
+                    ? [...deepestContextualTags].sort((a, b) => a.name.localeCompare(b.name))[0]
                     : null;
             }
         }
@@ -600,7 +612,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
             let deepestLevel = -1;
             const deepestTags: Tag[] = [];
             for (const tag of annotationTagsInvolved) {
-              const depth = getAllAncestorTagIds(tag.id, allNovelTags).length;
+              const depth = tagDepthCache.get(tag.id) ?? 0;
               if (depth > deepestLevel) {
                 deepestLevel = depth;
                 deepestTags.length = 0;
@@ -640,7 +652,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     return parts.map((part, i) => <React.Fragment key={`part-${i}`}>{part}</React.Fragment>);
   }, [
     viewMode, activeFilterTagDetails, globalFilterTagName,
-    allNovelTags, 
+    allNovelTags, tagDepthCache,
     textForPreview, annotations, getTagById, displayOffsetForPreview, selectedChapter,
     onDeleteAnnotation, editorMode, novel.text, novel.id, novel.title,
     novel.plotAnchors, novel.storylines // Storyline dependencies

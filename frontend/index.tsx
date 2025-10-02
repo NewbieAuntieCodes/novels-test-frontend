@@ -104,11 +104,11 @@ const App: React.FC = () => {
       const user: User = { id: response.user.id, username: response.user.username };
       setCurrentUser(user);
 
-      // 从后端加载用户数据
-      const [novelsData, tagsData, annotationsData] = await Promise.all([
-        novelsApi.getAll(),
+      // 从后端加载用户数据（优化：登录时不加载标注）
+      const [novelsData, tagsData] = await Promise.all([
+        novelsApi.getAll(),  // ⚠️ text 字段为空，打开编辑器时再加载
         tagsApi.getAll(),
-        annotationsApi.getAll(),
+        // ❌ 删除：annotationsApi.getAll() - 太多数据，在编辑器内按需加载
       ]);
 
       setNovels(novelsData);
@@ -130,7 +130,7 @@ const App: React.FC = () => {
       }
 
       setAllUserTags(finalTags);
-      setAllUserAnnotations(annotationsData);
+      setAllUserAnnotations([]); // 初始为空，编辑器内加载
 
       navigateTo('#/projects');
     } catch (error) {
@@ -229,12 +229,12 @@ const App: React.FC = () => {
 
     try {
       const normalizedText = text.replace(/\r\n|\r/g, '\n');
-      const chapters = splitTextIntoChapters(normalizedText);
+      // 不再在前端分章，由后端处理（性能优化）
 
       const newNovel = await novelsApi.create({
         title: title.trim(),
         text: normalizedText,
-        chapters: chapters,
+        // chapters 字段不传，让后端自动分章
         storylines: [],
         plotAnchors: [],
       });
