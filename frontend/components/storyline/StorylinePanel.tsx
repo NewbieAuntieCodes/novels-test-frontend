@@ -287,6 +287,7 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
     setIsDraggingOverList(false);
   };
 
+
   const renderStorylinesRecursive = (parentId: string | null, level: number = 0) => {
     return storylines
       .filter(sl => sl.parentId === parentId)
@@ -334,7 +335,6 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   return (
     <PanelContainer style={style}>
       <Title>故事线管理</Title>
-
       <StorylineForm onSubmit={handleAddSubmit}>
         <InputGroup>
           <StorylineInput

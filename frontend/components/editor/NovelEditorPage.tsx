@@ -11,9 +11,7 @@ import { usePanelResizer, MIN_PANEL_PERCENTAGE } from './hooks/usePanelResizer';
 import { useNovelEditorState } from './hooks/useNovelEditorState';
 import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
-import PendingAnchorsPanel from '../storyline/PendingAnchorsPanel';
-import TagSelectionPanel from '../tagpanel/TagSelectionPanel';
-import { novelsApi, annotationsApi } from '../../api';
+import { novelsApi, annotationsApi, tagsApi } from '../../api';
 
 
 interface NovelEditorPageProps {
@@ -28,7 +26,7 @@ interface NovelEditorPageProps {
   onUpdateTagName: (tagId: string, newName: string) => void;
 }
 
-export type EditorMode = 'edit' | 'annotation' | 'tag' | 'storyline'; // 'read' renamed to 'tag' 
+export type EditorMode = 'edit' | 'annotation' | 'read' | 'storyline'; 
 
 const EditorPageContainer = styled.div`
   display: flex;
@@ -154,7 +152,10 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
   const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
 
-  // 🆕 进入编辑器时加载小说全文和标注
+  // 🆕 记录当前小说ID，用于清理时知道要清理哪个小说
+  const currentNovelIdRef = useRef<string>(novel.id);
+
+  // 🆕 进入编辑器时加载小说全文、标签和标注
   useEffect(() => {
     const loadNovelData = async () => {
       try {
@@ -166,7 +167,28 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           setNovels(prev => prev.map(n => n.id === novel.id ? fullNovel : n));
         }
 
-        // 2. 如果该小说的标注未加载过，从后端加载
+        // 2. 🆕 加载该小说的标签 + 全局标签
+        const [novelTags, allTags] = await Promise.all([
+          tagsApi.getAll({ novelId: novel.id }),  // 该小说的标签
+          tagsApi.getAll()                         // 所有标签（用于获取全局标签）
+        ]);
+
+        const globalTags = allTags.filter(t => t.novelId === null); // 筛选全局标签
+
+        setAllUserTags(prev => {
+          // 移除旧的该小说标签和全局标签，然后添加新的
+          const otherNovelTags = prev.filter(t => t.novelId !== novel.id && t.novelId !== null);
+
+          // 使用 Set 去重，避免重复的标签
+          const allTagsMap = new Map<string, Tag>();
+          [...otherNovelTags, ...globalTags, ...novelTags].forEach(tag => {
+            allTagsMap.set(tag.id, tag);
+          });
+
+          return Array.from(allTagsMap.values());
+        });
+
+        // 3. 如果该小说的标注未加载过，从后端加载
         if (!loadedAnnotationsForNovelIds.has(novel.id)) {
           const annotationsData = await annotationsApi.getAll({ novelId: novel.id });
 
@@ -199,7 +221,33 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
     };
 
     loadNovelData();
-  }, [novel.id]); // 只在 novelId 变化时执行 
+  }, [novel.id]); // 只在 novelId 变化时执行
+
+  // 🆕 更新当前小说ID引用
+  useEffect(() => {
+    currentNovelIdRef.current = novel.id;
+  }, [novel.id]);
+
+  // 🆕 组件卸载时清理当前小说的数据，避免内存累积
+  useEffect(() => {
+    return () => {
+      const novelIdToClean = currentNovelIdRef.current;
+      console.log('[NovelEditor] 清理小说数据:', novelIdToClean);
+
+      // 清理标注
+      setAllUserAnnotations(prev => prev.filter(a => a.novelId !== novelIdToClean));
+
+      // 清理标签（保留全局标签）
+      setAllUserTags(prev => prev.filter(t => t.novelId !== novelIdToClean));
+
+      // 从已加载集合中移除，下次打开时重新加载
+      setLoadedAnnotationsForNovelIds(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(novelIdToClean);
+        return newSet;
+      });
+    };
+  }, [setAllUserAnnotations, setAllUserTags]);
   
   const editorState = useNovelEditorState({
     novel,
@@ -223,7 +271,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
     mainContentAreaRef,
   });
 
-  const contentPanelViewMode = (editorMode === 'tag' && (editorState.activeTagId || editorState.globalFilterTagName)) ? 'snippet' : 'full';
+  const contentPanelViewMode = (editorMode === 'read' && (editorState.activeTagId || editorState.globalFilterTagName)) ? 'snippet' : 'full';
 
   // 加载中状态
   if (isLoadingNovelData) {
@@ -273,13 +321,13 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             标注模式
           </ModeToggleButton>
           <ModeToggleButton
-            isActive={editorMode === 'tag'}
-            onClick={() => setEditorMode('tag')}
+            isActive={editorMode === 'read'}
+            onClick={() => setEditorMode('read')}
             role="radio"
-            aria-checked={editorMode === 'tag'}
-            title="标签模式：用于管理标签、查看已标注的片段。"
+            aria-checked={editorMode === 'read'}
+            title="阅读模式：用于查阅小说内容、已标注的片段。"
           >
-            标签模式
+            阅读模式
           </ModeToggleButton>
           <ModeToggleButton
             isActive={editorMode === 'storyline'}
@@ -321,67 +369,22 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             onDeleteStoryline={editorState.handleDeleteStoryline}
             onSelectStoryline={editorState.handleSelectStoryline}
           />
-        ) : editorMode === 'tag' ? (
-          <TagPanel
-            style={{ flexBasis: `${panelWidths[1]}%` }}
-            tags={editorState.currentUserTags}
-            onAddTag={editorState.handleAddTag}
-            activeTagId={editorState.activeTagId}
-            onApplyTagToSelection={editorState.applyTagToSelection}
-            onSelectTagForReadMode={editorState.selectTagForReadMode}
-            onUpdateTagParent={editorState.handleUpdateTagParent}
-            onUpdateTagColor={editorState.handleUpdateTagColor}
-            onUpdateTagName={onUpdateTagName}
-            editorMode={editorMode}
-            onTagGlobalSearch={editorState.handleTagGlobalSearch}
-            currentSelection={editorState.currentSelection}
-            onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
-          />
-        ) : editorMode === 'annotation' ? (
-          <TagPanel
-            style={{ flexBasis: `${panelWidths[1]}%` }}
-            tags={editorState.currentUserTags}
-            onAddTag={editorState.handleAddTag}
-            activeTagId={editorState.activeTagId}
-            onApplyTagToSelection={editorState.applyTagToSelection}
-            onSelectTagForReadMode={editorState.selectTagForReadMode}
-            onUpdateTagParent={editorState.handleUpdateTagParent}
-            onUpdateTagColor={editorState.handleUpdateTagColor}
-            onUpdateTagName={onUpdateTagName}
-            editorMode={editorMode}
-            onTagGlobalSearch={editorState.handleTagGlobalSearch}
-            currentSelection={editorState.currentSelection}
-            onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
-          />
         ) : (
-          <div style={{
-            flexBasis: `${panelWidths[1]}%`,
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: 0,
-            gap: '0'
-          }}>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <TagSelectionPanel
-                style={{ height: '100%', overflow: 'auto' }}
-                tags={editorState.currentUserTags}
-                activeTagId={editorState.activeTagId}
-                onApplyTagToSelection={editorState.applyTagToSelection}
-                onAddTag={editorState.handleAddTag}
-              />
-            </div>
-            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <StorylinePanel
-                style={{ height: '100%' }}
-                storylines={novel.storylines || []}
-                activeStorylineId={editorState.activeStorylineId}
-                onAddStoryline={editorState.handleAddStoryline}
-                onUpdateStoryline={editorState.handleUpdateStoryline}
-                onDeleteStoryline={editorState.handleDeleteStoryline}
-                onSelectStoryline={editorState.handleSelectStoryline}
-              />
-            </div>
-          </div>
+          <TagPanel
+            style={{ flexBasis: `${panelWidths[1]}%` }}
+            tags={editorState.currentUserTags}
+            onAddTag={editorState.handleAddTag} 
+            activeTagId={editorState.activeTagId} 
+            onApplyTagToSelection={editorState.applyTagToSelection}
+            onSelectTagForReadMode={editorState.selectTagForReadMode}
+            onUpdateTagParent={editorState.handleUpdateTagParent}
+            onUpdateTagColor={editorState.handleUpdateTagColor}
+            onUpdateTagName={onUpdateTagName} 
+            editorMode={editorMode}
+            onTagGlobalSearch={editorState.handleTagGlobalSearch}
+            currentSelection={editorState.currentSelection}
+            onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
+          />
         )}
         
         <Resizer
@@ -438,43 +441,15 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
              onUpdateAnchor={editorState.handleUpdatePlotAnchor}
              onDeleteAnchor={editorState.handleDeletePlotAnchor}
            />
-        ) : editorMode === 'annotation' ? (
-          <div style={{ flexBasis: `${panelWidths[3]}%`, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <FilterResultsPanel
-              style={{ flex: 1, minHeight: 0 }}
-              annotations={editorState.annotationsToDisplayOrFilter}
-              getTagById={editorState.getTagById}
-              activeFilterTag={editorState.activeTagDetails}
-              globalFilterTagName={editorState.globalFilterTagName}
-              onTagClick={editorState.selectTagForReadMode}
-              onTagDoubleClick={editorState.handleTagGlobalSearch}
-              allUserTags={editorState.currentUserTags}
-              onDeleteAnnotation={editorState.handleDeleteAnnotation}
-            />
-            <PendingAnchorsPanel
-              style={{ flex: 1, minHeight: 0 }}
-              plotAnchors={novel.plotAnchors || []}
-              novelText={novel.text}
-              onSelectAnchor={editorState.setScrollToAnchorId}
-              onEditAnchor={(anchorId) => {
-                const anchor = (novel.plotAnchors || []).find(a => a.id === anchorId);
-                if (anchor) {
-                  // Convert pending anchor to regular anchor by removing isPending flag
-                  editorState.handleUpdatePlotAnchor(anchorId, { isPending: false });
-                }
-              }}
-              onDeleteAnchor={editorState.handleDeletePlotAnchor}
-            />
-          </div>
         ) : (
           <FilterResultsPanel
             style={{ flexBasis: `${panelWidths[3]}%` }}
-            annotations={editorState.annotationsToDisplayOrFilter}
+            annotations={editorState.annotationsToDisplayOrFilter} 
             getTagById={editorState.getTagById}
-            activeFilterTag={editorState.activeTagDetails}
-            globalFilterTagName={editorState.globalFilterTagName}
-            onTagClick={editorState.selectTagForReadMode}
-            onTagDoubleClick={editorState.handleTagGlobalSearch}
+            activeFilterTag={editorState.activeTagDetails} 
+            globalFilterTagName={editorState.globalFilterTagName} 
+            onTagClick={editorState.selectTagForReadMode} 
+            onTagDoubleClick={editorState.handleTagGlobalSearch} 
             allUserTags={editorState.currentUserTags}
             onDeleteAnnotation={editorState.handleDeleteAnnotation}
           />

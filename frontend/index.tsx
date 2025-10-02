@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useTransition } from 'react';
 import { createRoot } from 'react-dom/client';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, Chapter, User, TagTemplate } from './types';
@@ -104,32 +104,26 @@ const App: React.FC = () => {
       const user: User = { id: response.user.id, username: response.user.username };
       setCurrentUser(user);
 
-      // 从后端加载用户数据（优化：登录时不加载标注）
-      const [novelsData, tagsData] = await Promise.all([
-        novelsApi.getAll(),  // ⚠️ text 字段为空，打开编辑器时再加载
-        tagsApi.getAll(),
-        // ❌ 删除：annotationsApi.getAll() - 太多数据，在编辑器内按需加载
-      ]);
+      // 从后端加载用户数据（优化：登录时不加载标注和小说标签）
+      const novelsData = await novelsApi.getAll();  // ⚠️ text 字段为空，打开编辑器时再加载
 
       setNovels(novelsData);
 
-      // 确保"待标注"标签存在
-      let finalTags = tagsData;
-      const hasPendingTag = tagsData.some(t => t.name === PENDING_ANNOTATION_TAG_NAME);
-      if (!hasPendingTag) {
-        try {
-          const pendingTag = await tagsApi.create({
-            name: PENDING_ANNOTATION_TAG_NAME,
-            color: PENDING_ANNOTATION_TAG_COLOR,
-            parentId: null,
-          });
-          finalTags = [...tagsData, pendingTag];
-        } catch (error) {
-          console.error('创建待标注标签失败:', error);
-        }
+      // 🆕 确保全局"待标注"标签存在（novelId=null的全局标签）
+      try {
+        await tagsApi.create({
+          name: PENDING_ANNOTATION_TAG_NAME,
+          color: PENDING_ANNOTATION_TAG_COLOR,
+          parentId: null,
+          novelId: null, // 全局标签
+        });
+      } catch (error) {
+        // 如果创建失败，可能是已经存在，忽略错误
       }
 
-      setAllUserTags(finalTags);
+      // 加载所有用户的标签（全局标签 + 所有小说的标签）
+      const allUserTagsData = await tagsApi.getAll();
+      setAllUserTags(allUserTagsData);
       setAllUserAnnotations([]); // 初始为空，编辑器内加载
 
       navigateTo('#/projects');
@@ -356,6 +350,7 @@ const App: React.FC = () => {
             currentUser={currentUser}
             navigateTo={navigateTo}
             onDeleteAnnotationGlobally={handleDeleteAnnotationGlobally}
+            setAllUserAnnotations={setAllUserAnnotations}
           />
         );
       default:

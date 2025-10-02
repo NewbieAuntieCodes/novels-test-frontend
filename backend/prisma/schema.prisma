@@ -31,6 +31,7 @@ model Novel {
   updatedAt   DateTime     @updatedAt
   userId      String
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tags        Tag[]        // 🆕 小说的标签
   annotations Annotation[]
 
   @@index([userId])
@@ -42,14 +43,17 @@ model Tag {
   color       String
   parentId    String?
   userId      String
+  novelId     String?         // 🆕 标签属于特定小说（null表示全局标签，如"待标注"）
   createdAt   DateTime        @default(now())
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  novel       Novel?          @relation(fields: [novelId], references: [id], onDelete: Cascade)
   parent      Tag?            @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
   children    Tag[]           @relation("TagHierarchy")
   annotations AnnotationTag[]
 
-  @@unique([userId, name])
+  @@unique([userId, novelId, name]) // 同一用户的同一小说中，标签名不能重复
   @@index([userId])
+  @@index([novelId])
 }
 
 model Annotation {

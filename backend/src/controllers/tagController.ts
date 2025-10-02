@@ -2,13 +2,21 @@ import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 import { CreateTagRequest, UpdateTagRequest } from '../types';
 
-// 获取所有标签
+// 获取所有标签（可按小说ID筛选）
 export const getTags = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
+    const { novelId } = req.query;
+
+    const where: any = { userId };
+
+    // 如果指定了novelId，只返回该小说的标签；否则返回所有标签
+    if (novelId) {
+      where.novelId = novelId as string;
+    }
 
     const tags = await prisma.tag.findMany({
-      where: { userId },
+      where,
       orderBy: { createdAt: 'asc' },
     });
 
@@ -23,18 +31,31 @@ export const getTags = async (req: Request, res: Response): Promise<void> => {
 export const createTag = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { name, color, parentId }: CreateTagRequest = req.body;
+    const { name, color, parentId, novelId }: CreateTagRequest & { novelId?: string } = req.body;
 
     if (!name || !color) {
       res.status(400).json({ error: '标签名称和颜色不能为空' });
       return;
     }
 
-    // 检查是否已存在同名标签
+    // 🆕 如果指定了novelId，验证小说存在且属于当前用户
+    if (novelId) {
+      const novel = await prisma.novel.findFirst({
+        where: { id: novelId, userId },
+      });
+
+      if (!novel) {
+        res.status(404).json({ error: '小说不存在' });
+        return;
+      }
+    }
+
+    // 检查是否已存在同名标签（同一小说中不能有重复标签名）
     const existingTag = await prisma.tag.findUnique({
       where: {
-        userId_name: {
+        userId_novelId_name: {
           userId,
+          novelId: novelId || null,
           name,
         },
       },
@@ -45,10 +66,10 @@ export const createTag = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 如果指定了父标签，验证父标签存在且属于当前用户
+    // 如果指定了父标签，验证父标签存在且属于当前用户和同一小说
     if (parentId) {
       const parentTag = await prisma.tag.findFirst({
-        where: { id: parentId, userId },
+        where: { id: parentId, userId, novelId: novelId || null },
       });
 
       if (!parentTag) {
@@ -63,6 +84,7 @@ export const createTag = async (req: Request, res: Response): Promise<void> => {
         color,
         parentId: parentId || null,
         userId,
+        novelId: novelId || null, // 🆕 关联小说ID
       },
     });
 
@@ -90,12 +112,13 @@ export const updateTag = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 如果修改名称，检查新名称是否已被使用
+    // 如果修改名称，检查新名称是否已被使用（同一小说中）
     if (name && name !== existingTag.name) {
       const duplicateTag = await prisma.tag.findUnique({
         where: {
-          userId_name: {
+          userId_novelId_name: {
             userId,
+            novelId: existingTag.novelId,
             name,
           },
         },

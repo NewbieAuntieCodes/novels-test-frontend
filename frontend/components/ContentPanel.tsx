@@ -13,19 +13,19 @@ import PlotAnchorPopover from './storyline/PlotAnchorPopover';
 
 interface ContentPanelProps {
   novel: Novel;
-  onNovelTextChange: (text: string) => void;
+  onNovelTextChange: (text: string) => void; 
   onChapterTextChange: (chapterId: string, newContent: string) => void;
   onTextSelection: () => void;
   annotations: Annotation[];
   getTagById: (id: string) => Tag | undefined;
   selectedChapter: Chapter | null;
   style?: CSSProperties;
-  viewMode: 'full' | 'snippet';
+  viewMode: 'full' | 'snippet'; 
   activeFilterTagDetails: Tag | null;
-  globalFilterTagName?: string | null;
+  globalFilterTagName?: string | null; 
   allNovelTags: Tag[];
   editorMode: EditorMode;
-  onDeleteAnnotation?: (annotationId: string) => void;
+  onDeleteAnnotation?: (annotationId: string) => void; 
   currentSelection: SelectionDetails | null;
   // Storyline Props
   onAddPlotAnchor: (description: string, position: number, storylineIds: string[]) => void;
@@ -186,7 +186,6 @@ const SnippetSourceNovel = styled.p<{ effectiveColor?: string }>`
 `;
 
 const Placeholder = styled.p(globalPlaceholderTextStyles);
-
 
 // --- Storyline specific components ---
 const ParagraphWrapper = styled.div`
@@ -431,86 +430,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       );
     }
     
-    // --- ANNOTATION MODE RENDERER (with annotations only, no paragraph wrapping) ---
-    if (editorMode === 'annotation' && viewMode === 'full') {
-      const text = textForPreview;
-
-      // Get annotations for highlighting
-      const relevantAnnotations = annotations
-        .filter(ann => {
-          const annStartInView = ann.startIndex - displayOffsetForPreview;
-          const annEndInView = ann.endIndex - displayOffsetForPreview;
-          return annEndInView > 0 && annStartInView < text.length;
-        })
-        .sort((a, b) => a.startIndex - b.startIndex)
-        .slice(0, 500);
-
-      if (relevantAnnotations.length === 0 && text.trim()) {
-        return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
-      }
-
-      let lastIndex = 0;
-      const parts: (string | React.ReactElement)[] = [];
-
-      relevantAnnotations.forEach((ann) => {
-        const annStartInView = Math.max(0, ann.startIndex - displayOffsetForPreview);
-        const annEndInView = Math.min(text.length, ann.endIndex - displayOffsetForPreview);
-
-        if (annStartInView >= text.length || annEndInView <= 0 || annStartInView >= annEndInView) return;
-
-        if (annStartInView > lastIndex) {
-          parts.push(text.substring(lastIndex, annStartInView));
-        }
-
-        const renderStart = Math.max(annStartInView, lastIndex);
-        if (annEndInView <= renderStart) return;
-
-        const annotationTagsInvolved = ann.tagIds.map(tid => getTagById(tid)).filter((t): t is Tag => !!t);
-        let primaryTagForHighlight: Tag | null = null;
-
-        if (annotationTagsInvolved.length > 0) {
-          let deepestLevel = -1;
-          const deepestTags: Tag[] = [];
-          for (const tag of annotationTagsInvolved) {
-            const depth = tagDepthCache.get(tag.id) ?? 0;
-            if (depth > deepestLevel) {
-              deepestLevel = depth;
-              deepestTags.length = 0;
-              deepestTags.push(tag);
-            } else if (depth === deepestLevel) {
-              deepestTags.push(tag);
-            }
-          }
-          primaryTagForHighlight = deepestTags.length > 0
-            ? [...deepestTags].sort((a,b) => a.name.localeCompare(b.name))[0]
-            : [...annotationTagsInvolved].sort((a,b) => a.name.localeCompare(b.name))[0];
-        }
-
-        const tagNames = annotationTagsInvolved.map(t => t.name).join(' | ');
-        const bgColor = primaryTagForHighlight?.color || COLORS.gray300;
-        const color = primaryTagForHighlight ? getContrastingTextColor(primaryTagForHighlight.color) : COLORS.black;
-
-        parts.push(
-          <AnnotatedSpan
-            key={`${ann.id}-${ann.startIndex}`}
-            style={{ backgroundColor: bgColor, color: color }}
-            isMisaligned={ann.isPotentiallyMisaligned}
-            title={ann.isPotentiallyMisaligned ? `标签: ${tagNames} (此标注可能已错位)` : `标签: ${tagNames}`}
-          >
-            {text.substring(renderStart, annEndInView)}
-          </AnnotatedSpan>
-        );
-        lastIndex = Math.max(lastIndex, annEndInView);
-      });
-
-      if (lastIndex < text.length) {
-        parts.push(text.substring(lastIndex));
-      }
-
-      return <div style={{ whiteSpace: 'pre-wrap' }}>{parts.map((part, i) => <React.Fragment key={`part-${i}`}>{part}</React.Fragment>)}</div>;
-    }
-
-    // --- OTHER MODES RENDERER (TAG READ) ---
+    // --- OTHER MODES RENDERER (ANNOTATION, READ) ---
 
     if (viewMode === 'snippet') {
       let snippets: { id: string; text: string; tags: Tag[]; originalAnnotationId: string; isPotentiallyMisaligned?: boolean; sourceNovelId?: string; sourceNovelTitle?: string; }[] = [];
@@ -521,35 +441,37 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
             .filter(t => t.name.toLowerCase() === lowerGlobalFilterTagName)
             .map(t => t.id);
         if (matchingGlobalTagIds.length === 0) return <Placeholder>全局搜索: 未找到 "{globalFilterTagName}" 标签。</Placeholder>;
-        
+
         snippets = annotations
             .filter(ann => ann.tagIds.some(tid => matchingGlobalTagIds.includes(tid)))
             .sort((a,b) => a.startIndex - b.startIndex)
-            .map(ann => ({ 
-                id: ann.id, 
-                text: ann.text, 
-                tags: ann.tagIds.map(tid => allNovelTags.find(t => t.id === tid)).filter(Boolean) as Tag[], 
-                originalAnnotationId: ann.id, 
+            .map(ann => ({
+                id: ann.id,
+                text: ann.text,
+                tags: ann.tagIds.map(tid => allNovelTags.find(t => t.id === tid)).filter(Boolean) as Tag[],
+                originalAnnotationId: ann.id,
                 isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
                 sourceNovelId: ann.novelId,
-                sourceNovelTitle: novel.title
+                // ✅ 阅读模式下在单本小说内搜索，不显示来源小说（因为就是当前小说）
+                sourceNovelTitle: undefined
             }));
         if (snippets.length === 0) return <Placeholder>在 "{novel.title}" 中未找到与 "{globalFilterTagName}" 相关的标注。</Placeholder>;
 
       } else if (activeFilterTagDetails) {
         const tagAndDescendantIds = new Set([activeFilterTagDetails.id, ...getAllDescendantTagIds(activeFilterTagDetails.id, allNovelTags)]);
-        
+
         snippets = annotations
           .filter(ann => ann.tagIds.some(tid => tagAndDescendantIds.has(tid)))
           .sort((a,b) => a.startIndex - b.startIndex)
-          .map(ann => ({ 
-              id: ann.id, 
-              text: ann.text, 
-              tags: ann.tagIds.map(tid => allNovelTags.find(t => t.id === tid)).filter(Boolean) as Tag[], 
-              originalAnnotationId: ann.id, 
+          .map(ann => ({
+              id: ann.id,
+              text: ann.text,
+              tags: ann.tagIds.map(tid => allNovelTags.find(t => t.id === tid)).filter(Boolean) as Tag[],
+              originalAnnotationId: ann.id,
               isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
               sourceNovelId: ann.novelId,
-              sourceNovelTitle: novel.title
+              // ✅ 阅读模式下在单本小说内搜索，不显示来源小说（因为就是当前小说）
+              sourceNovelTitle: undefined
             }));
         if (snippets.length === 0) return <Placeholder>标签 "{activeFilterTagDetails.name}" (含子标签) 在当前小说中无标注。</Placeholder>;
       
@@ -592,12 +514,12 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                 bgColor={bgColor}
               >
                 {snippet.sourceNovelTitle && <SnippetSourceNovel effectiveColor={textColor}>来自: {snippet.sourceNovelTitle}</SnippetSourceNovel>}
-                <SnippetParagraph style={{ color: textColor }}>{snippet.text || '[无文本内容]'}</SnippetParagraph>
+                <SnippetParagraph style={{ color: textColor }}>{snippet.text}</SnippetParagraph>
                 {onDeleteAnnotation && (
-                  <DeleteSnippetButton
+                  <DeleteSnippetButton 
                     effectiveColor={textColor}
-                    onClick={() => onDeleteAnnotation(snippet.originalAnnotationId)}
-                    aria-label={`删除标注: ${snippet.text?.substring(0,20) || '无文本'}...`}
+                    onClick={() => onDeleteAnnotation(snippet.originalAnnotationId)} 
+                    aria-label={`删除标注: ${snippet.text.substring(0,20)}...`} 
                     title="删除此标注"
                   >
                     ✕
@@ -611,7 +533,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
 
     const currentDisplayText = textForPreview;
-    if (!currentDisplayText.trim() && (editorMode === 'tag' || (editorMode === 'edit' && !novel.text && !selectedChapter))) {
+    if (!currentDisplayText.trim() && (editorMode === 'read' || (editorMode === 'edit' && !novel.text && !selectedChapter))) {
       const placeholderMsg = selectedChapter 
         ? "当前章节内容为空。" 
         : (editorMode === 'edit' ? "在此处粘贴或输入您的小说文本。" : "小说内容为空。");
@@ -745,12 +667,12 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     if (editorMode === 'annotation') {
         return selectedChapter ? `标注模式: ${selectedChapter.title}` : "标注模式: 全文预览与标注";
     }
-    if (editorMode === 'tag') {
+    if (editorMode === 'read') {
         if (viewMode === 'snippet') {
           if (globalFilterTagName) return `片段: 全局搜索 "${globalFilterTagName}"`;
           return activeFilterTagDetails ? `片段: ${activeFilterTagDetails.name} (含子标签)` : "片段阅读";
         }
-        return selectedChapter ? `标签模式: ${selectedChapter.title}` : "标签模式: 小说原文";
+        return selectedChapter ? `阅读模式: ${selectedChapter.title}` : "阅读模式: 小说原文";
     }
     if (editorMode === 'storyline') {
         return selectedChapter ? `剧情线模式: ${selectedChapter.title}` : "剧情线模式: 小说原文";
@@ -798,11 +720,11 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         />
       )}
 
-      {(editorMode === 'annotation' || editorMode === 'tag' || editorMode === 'storyline') && (
+      {(editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && (
         <ContentPreviewContainer>
-          <ContentDisplay
-            id="content-display-area"
-            onMouseUp={(editorMode === 'annotation' || editorMode === 'tag') ? onTextSelection : undefined}
+          <ContentDisplay 
+            id="content-display-area" 
+            onMouseUp={editorMode === 'annotation' ? onTextSelection : undefined}
             role="article"
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}

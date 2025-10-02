@@ -6,12 +6,14 @@ interface TagCreateRequest {
   name: string;
   color: string;
   parentId?: string | null;
+  novelId?: string | null; // 🆕 标签所属小说ID
 }
 
 export const tagsApi = {
-  // 获取所有标签
-  async getAll(): Promise<Tag[]> {
-    return apiRequest<Tag[]>('/tags');
+  // 获取所有标签（可按小说ID筛选）
+  async getAll(params?: { novelId?: string }): Promise<Tag[]> {
+    const queryString = params?.novelId ? `?novelId=${params.novelId}` : '';
+    return apiRequest<Tag[]>(`/tags${queryString}`);
   },
 
   // 创建标签

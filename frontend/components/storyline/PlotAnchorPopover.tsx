@@ -75,13 +75,12 @@ const StorylineList = styled.div`
   gap: ${SPACING.xs};
 `;
 
-const StorylineCheckboxLabel = styled.label<{ level: number }>`
+const StorylineCheckboxLabel = styled.label`
   display: flex;
   align-items: center;
   gap: ${SPACING.sm};
   cursor: pointer;
   padding: ${SPACING.xs};
-  padding-left: ${props => props.level * 20 + 8}px;
   border-radius: ${BORDERS.radius};
   &:hover {
     background-color: ${COLORS.gray100};
@@ -119,7 +118,6 @@ const DeleteButton = styled.button`
   cursor: pointer;
   &:hover { text-decoration: underline; }
 `;
-
 
 const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
   targetElement,
@@ -171,25 +169,6 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
     }
   };
 
-  // 递归渲染故事线树形结构
-  const renderStorylinesRecursive = (parentId: string | null, level: number = 0): JSX.Element[] => {
-    return storylines
-      .filter(sl => sl.parentId === parentId)
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .flatMap(sl => [
-        <StorylineCheckboxLabel key={sl.id} level={level}>
-          <input
-            type="checkbox"
-            checked={selectedIds.has(sl.id)}
-            onChange={() => handleCheckboxChange(sl.id)}
-          />
-          <CheckboxColorSwatch style={{ backgroundColor: sl.color }} />
-          <span>{sl.name}</span>
-        </StorylineCheckboxLabel>,
-        ...renderStorylinesRecursive(sl.id, level + 1)
-      ]);
-  };
-
   return (
     <>
       <PopoverBackdrop onClick={onClose} />
@@ -202,10 +181,17 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
           autoFocus
         />
         <StorylineList>
-          {storylines.length > 0
-            ? renderStorylinesRecursive(null, 0)
-            : <p style={{color: COLORS.textLighter, fontSize: FONTS.sizeSmall, textAlign: 'center'}}>请先在左侧创建故事线</p>
-          }
+          {storylines.length > 0 ? storylines.map(sl => (
+            <StorylineCheckboxLabel key={sl.id}>
+              <input
+                type="checkbox"
+                checked={selectedIds.has(sl.id)}
+                onChange={() => handleCheckboxChange(sl.id)}
+              />
+              <CheckboxColorSwatch style={{ backgroundColor: sl.color }} />
+              <span>{sl.name}</span>
+            </StorylineCheckboxLabel>
+          )) : <p style={{color: COLORS.textLighter, fontSize: FONTS.sizeSmall, textAlign: 'center'}}>请先在左侧创建故事线</p>}
         </StorylineList>
         <ButtonContainer>
           {existingAnchor && <DeleteButton onClick={onDelete}>删除</DeleteButton>}

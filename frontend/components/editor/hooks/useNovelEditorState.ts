@@ -37,16 +37,17 @@ export const useNovelEditorState = ({
   const [scrollToAnchorId, setScrollToAnchorId] = useState<string | null>(null);
 
 
-  // Tags are global to the user, not specific to the novel.
-  // This list represents all tags available to the current user.
+  // 🆕 标签属于当前小说（或全局标签，如"待标注"）
   const currentUserTags = useMemo(
-    () => allUserTags.filter(t => t.userId === currentUser.id),
-    [allUserTags, currentUser.id]
+    () => allUserTags.filter(t =>
+      t.userId === currentUser.id && (t.novelId === novel.id || t.novelId === null)
+    ),
+    [allUserTags, currentUser.id, novel.id]
   );
-  
-  const pendingTag = useMemo(() => 
-    currentUserTags.find(t => t.name === PENDING_ANNOTATION_TAG_NAME),
-    [currentUserTags]
+
+  const pendingTag = useMemo(() =>
+    allUserTags.find(t => t.userId === currentUser.id && t.name === PENDING_ANNOTATION_TAG_NAME && t.novelId === null),
+    [allUserTags, currentUser.id]
   );
 
   const annotationsForCurrentNovel = useMemo(
@@ -65,7 +66,7 @@ export const useNovelEditorState = ({
   );
   
   useEffect(() => {
-    if (editorMode === 'tag') {
+    if (editorMode === 'read') {
       // 不再清空章节选择,保留用户的章节选择状态
       // if (activeTagId) {
       //   setSelectedChapterId(null);
@@ -236,6 +237,7 @@ export const useNovelEditorState = ({
       color,
       parentId,
       userId: currentUser.id,
+      novelId: novel.id, // 🆕 关联当前小说
     };
 
     // 先更新本地状态,提供即时反馈
@@ -247,6 +249,7 @@ export const useNovelEditorState = ({
         name: name.trim(),
         color,
         parentId,
+        novelId: novel.id, // 🆕 关联当前小说
       });
 
       // 用后端返回的标签替换临时标签(ID可能不同)
@@ -345,7 +348,7 @@ export const useNovelEditorState = ({
   };
 
   const handleTextSelection = useCallback(() => {
-    if (editorMode !== 'annotation' && editorMode !== 'tag') {
+    if (editorMode !== 'annotation') {
       setCurrentSelection(null);
       return;
     }
@@ -501,13 +504,18 @@ export const useNovelEditorState = ({
   const applyTagToSelection = (tagId: string) => {
     setGlobalFilterTagNameInternal(null);
 
-    // 如果有选中的文本，创建标注
+    if (editorMode === 'read') {
+        setActiveTagIdInternal(tagId);
+        // 不再清空章节选择,保留用户的章节选择状态
+        setCurrentSelection(null);
+        return;
+    }
+
     if (currentSelection) {
       _applyTagsToSegment(currentSelection, [tagId]);
       setCurrentSelection(null);
     }
 
-    // 设置当前激活的标签（用于筛选显示）
     setActiveTagIdInternal(tagId);
   };
   
@@ -520,7 +528,7 @@ export const useNovelEditorState = ({
 
   const selectTagForReadMode = (tagId: string | null) => {
     setGlobalFilterTagNameInternal(null);
-    if (editorMode !== 'tag') return;
+    if (editorMode !== 'read') return;
     setActiveTagIdInternal(tagId);
     // 不再清空章节选择,保留用户的章节选择状态
     setCurrentSelection(null);
@@ -529,8 +537,7 @@ export const useNovelEditorState = ({
   const handleTagGlobalSearch = (tagName: string) => {
     setGlobalFilterTagNameInternal(tagName);
     setActiveTagIdInternal(null);
-    // 全局搜索时清空章节选择是合理的,因为要显示全文搜索结果
-    setSelectedChapterId(null);
+    // ✅ 全局搜索时不清空章节选择,因为snippet视图不依赖章节,保留章节可以避免不必要的重新渲染和状态更新
     setCurrentSelection(null);
   };
 
@@ -616,10 +623,10 @@ export const useNovelEditorState = ({
         return s;
       });
 
-    // 删除所有包含该故事线的剧情锚点
-    const updatedPlotAnchors = (novel.plotAnchors || []).filter(
-      anchor => !anchor.storylineIds.includes(storylineId)
-    );
+    const updatedPlotAnchors = (novel.plotAnchors || []).map(anchor => ({
+      ...anchor,
+      storylineIds: anchor.storylineIds.filter(id => id !== storylineId)
+    })).filter(anchor => anchor.storylineIds.length > 0);
 
     // 先更新本地状态
     setNovels(novels => novels.map(n =>
@@ -659,7 +666,6 @@ export const useNovelEditorState = ({
       alert('创建剧情锚点失败,请稍后重试');
     }
   };
-
 
   const handleUpdatePlotAnchor = async (anchorId: string, updates: Partial<PlotAnchor>) => {
     const updatedPlotAnchors = (novel.plotAnchors || []).map(a =>

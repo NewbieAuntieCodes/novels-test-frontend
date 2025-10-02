@@ -17,7 +17,7 @@ export interface Tag {
   name: string;
   color: string;
   parentId: string | null;
-  // novelId: string; // REMOVED - Tags are global per user
+  novelId: string | null; // 🆕 标签属于特定小说（null表示全局标签，如"待标注"）
   userId: string; // Associated user
 }
 

@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, User } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, panelStyles, globalPlaceholderTextStyles } from '../../styles';
 import { getAllDescendantTagIds, getContrastingTextColor, getAllAncestorTagIds } from "../../utils";
 import TagList from '../tagpanel/TagList';
+import { annotationsApi } from '../../api';
 
 interface GlobalTagSearchPageProps {
   allUserTags: Tag[];
@@ -12,6 +13,7 @@ interface GlobalTagSearchPageProps {
   currentUser: User;
   navigateTo: (path: string) => void;
   onDeleteAnnotationGlobally: (annotationId: string) => void;
+  setAllUserAnnotations: React.Dispatch<React.SetStateAction<Annotation[]>>;
 }
 
 const PageContainer = styled.div`
@@ -221,9 +223,41 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
   currentUser,
   navigateTo,
   onDeleteAnnotationGlobally,
+  setAllUserAnnotations,
 }) => {
   const [tagSearchQuery, setTagSearchQuery] = useState('');
   const [selectedTag, setSelectedTag] = useState<Tag | null>(null);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [isLoadingAnnotations, setIsLoadingAnnotations] = useState(false);
+  const [hasLoadedAllAnnotations, setHasLoadedAllAnnotations] = useState(false);
+
+  // 🆕 首次打开全局搜索页面时，加载所有标注数据（不加载小说文本）
+  useEffect(() => {
+    const loadAllAnnotations = async () => {
+      if (hasLoadedAllAnnotations || isLoadingAnnotations) return;
+
+      try {
+        setIsLoadingAnnotations(true);
+        const allAnnotations = await annotationsApi.getAll(); // 加载所有标注（后端只返回标注数据，不含小说文本）
+
+        // 合并到全局状态，保留已有的标注
+        setAllUserAnnotations(prev => {
+          const existingIds = new Set(prev.map(a => a.id));
+          const newAnnotations = allAnnotations.filter(a => !existingIds.has(a.id));
+          return [...prev, ...newAnnotations];
+        });
+
+        setHasLoadedAllAnnotations(true);
+      } catch (error) {
+        console.error('加载所有标注失败:', error);
+        alert('加载标注数据失败，请刷新重试');
+      } finally {
+        setIsLoadingAnnotations(false);
+      }
+    };
+
+    loadAllAnnotations();
+  }, [hasLoadedAllAnnotations, isLoadingAnnotations, setAllUserAnnotations]);
 
   const filteredTags = useMemo(() => {
     if (!tagSearchQuery.trim()) {
@@ -274,8 +308,31 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
     }
   };
 
+  const handleNavigateToNovel = (novelId: string) => {
+    // 直接导航，不设置 loading 状态，避免额外的重新渲染
+    navigateTo(`#/edit/${novelId}`);
+  };
+
   return (
     <PageContainer>
+      {(isNavigating || isLoadingAnnotations) && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(255, 255, 255, 0.9)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          fontSize: '1.2em',
+          color: COLORS.textLight
+        }}>
+          {isLoadingAnnotations ? '正在加载所有标注数据...' : '正在打开小说...'}
+        </div>
+      )}
       <Header>
         <PageTitle>全局标签搜索</PageTitle>
         <BackButton onClick={() => navigateTo('#/projects')}>
@@ -352,7 +409,7 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
                   <AnnotationItem key={ann.id}>
                     <AnnotationText>"{ann.text || '[无文本内容]'}"</AnnotationText>
                     <SourceNovelText>
-                      来源: <SourceNovelLink onClick={() => navigateTo(`#/edit/${ann.novelId}`)} role="link" tabIndex={0} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && navigateTo(`#/edit/${ann.novelId}`)}>
+                      来源: <SourceNovelLink onClick={() => handleNavigateToNovel(ann.novelId)} role="link" tabIndex={0} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && handleNavigateToNovel(ann.novelId)}>
                               {getNovelTitleById(ann.novelId)}
                             </SourceNovelLink>
                     </SourceNovelText>
