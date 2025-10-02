@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useMemo, Dispatch, SetStateAction } f
 import type { Novel, Tag, Annotation, SelectionDetails, Chapter, User, Storyline, PlotAnchor } from '../../../types';
 import { generateId, getAllAncestorTagIds, getAllDescendantTagIds, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME } from '../../../utils';
 import type { EditorMode } from '../NovelEditorPage';
+import { annotationsApi, tagsApi } from '../../../api';
 
 interface UseNovelEditorStateProps {
   novel: Novel;
@@ -65,10 +66,12 @@ export const useNovelEditorState = ({
   
   useEffect(() => {
     if (editorMode === 'read') {
-      if (activeTagId) { 
-        setSelectedChapterId(null); 
-        setCurrentSelection(null); 
-      }
+      // 不再清空章节选择,保留用户的章节选择状态
+      // if (activeTagId) {
+      //   setSelectedChapterId(null);
+      //   setCurrentSelection(null);
+      // }
+      setCurrentSelection(null);
     }
      if (editorMode !== 'storyline') {
       setActiveStorylineId(null);
@@ -223,16 +226,43 @@ export const useNovelEditorState = ({
     setCurrentSelection(null);
   };
 
-  const handleAddTag = (name: string, color: string, parentId: string | null) => {
+  const handleAddTag = async (name: string, color: string, parentId: string | null) => {
     if (name.trim() === '' || !currentUser) return;
-    const newTag: Tag = {
-      id: generateId(), name: name.trim(), color, parentId, 
+
+    // 创建临时标签用于立即显示
+    const tempTag: Tag = {
+      id: generateId(),
+      name: name.trim(),
+      color,
+      parentId,
       userId: currentUser.id,
     };
-    setAllUserTags(prevTags => [...prevTags, newTag]);
+
+    // 先更新本地状态,提供即时反馈
+    setAllUserTags(prevTags => [...prevTags, tempTag]);
+
+    // 然后保存到后端
+    try {
+      const savedTag = await tagsApi.create({
+        name: name.trim(),
+        color,
+        parentId,
+      });
+
+      // 用后端返回的标签替换临时标签(ID可能不同)
+      setAllUserTags(prevTags =>
+        prevTags.map(t => (t.id === tempTag.id ? savedTag : t))
+      );
+    } catch (error) {
+      console.error('保存标签到后端失败:', error);
+      // 如果保存失败,移除临时标签
+      setAllUserTags(prevTags => prevTags.filter(t => t.id !== tempTag.id));
+      alert('创建标签失败,请稍后重试');
+    }
   };
 
-  const handleUpdateTagParent = (tagId: string, newParentId: string | null) => {
+  const handleUpdateTagParent = async (tagId: string, newParentId: string | null) => {
+    // 先更新本地状态
     setAllUserTags(prevGlobalTags => {
       const userTagsBeforeUpdate = prevGlobalTags.filter(
         t => t.userId === currentUser.id
@@ -256,7 +286,7 @@ export const useNovelEditorState = ({
 
           const currentAnnotationLeafTagIds: string[] = ann.tagIds.filter(currentTagIdInAnnotation => {
             const isOriginalTagValid = userTagsBeforeUpdate.some(t => t.id === currentTagIdInAnnotation);
-            if (!isOriginalTagValid) return false; 
+            if (!isOriginalTagValid) return false;
 
             const isAncestorToAnotherInAnnotation = ann.tagIds.some(otherTagIdInAnnotation => {
               if (currentTagIdInAnnotation === otherTagIdInAnnotation) return false;
@@ -265,17 +295,17 @@ export const useNovelEditorState = ({
             });
             return !isAncestorToAnotherInAnnotation;
           });
-          
+
           let newCombinedTagIdsForAnnotation = new Set<string>();
           currentAnnotationLeafTagIds.forEach(leafTagId => {
             const leafTagExistsInNew = userTagsAfterUpdate.find(t => t.id === leafTagId);
-            if (leafTagExistsInNew) { 
+            if (leafTagExistsInNew) {
                 newCombinedTagIdsForAnnotation.add(leafTagId);
                 const newAncestors = getAllAncestorTagIds(leafTagId, userTagsAfterUpdate);
                 newAncestors.forEach(ancestorId => newCombinedTagIdsForAnnotation.add(ancestorId));
             }
           });
-          
+
           const finalTagIds = Array.from(newCombinedTagIdsForAnnotation)
                                    .filter(tid => userTagsAfterUpdate.some(t => t.id === tid));
 
@@ -285,16 +315,33 @@ export const useNovelEditorState = ({
 
       return updatedGlobalTags;
     });
+
+    // 然后保存到后端
+    try {
+      await tagsApi.update(tagId, { parentId: newParentId });
+    } catch (error) {
+      console.error('更新标签层级到后端失败:', error);
+      alert('更新标签层级失败,请稍后重试');
+    }
   };
 
-  const handleUpdateTagColor = (tagId: string, newColor: string) => {
+  const handleUpdateTagColor = async (tagId: string, newColor: string) => {
+    // 先更新本地状态,提供即时反馈
     setAllUserTags(prevTags =>
       prevTags.map(tag =>
-        (tag.id === tagId && tag.userId === currentUser.id) 
-        ? { ...tag, color: newColor } 
+        (tag.id === tagId && tag.userId === currentUser.id)
+        ? { ...tag, color: newColor }
         : tag
       )
     );
+
+    // 然后保存到后端
+    try {
+      await tagsApi.update(tagId, { color: newColor });
+    } catch (error) {
+      console.error('更新标签颜色到后端失败:', error);
+      alert('更新标签颜色失败,请稍后重试');
+    }
   };
 
   const handleTextSelection = useCallback(() => {
@@ -337,7 +384,7 @@ export const useNovelEditorState = ({
     } else { setCurrentSelection(null); }
   }, [novel.text, currentChapterDetails, editorMode]);
 
-  const _applyTagsToSegment = useCallback((selectionToAnnotate: SelectionDetails, tagIdsToApply: string[]) => {
+  const _applyTagsToSegment = useCallback(async (selectionToAnnotate: SelectionDetails, tagIdsToApply: string[]) => {
     if (!currentUser) return;
 
     const allRelevantTagIds = new Set<string>();
@@ -375,9 +422,9 @@ export const useNovelEditorState = ({
       if (existingAnnotation) {
         const hasPendingTag = pendingTag ? existingAnnotation.tagIds.includes(pendingTag.id) : false;
         const isApplyingPendingTag = pendingTag ? tagIdsToApply.includes(pendingTag.id) : false;
-        
+
         let finalExistingTags = [...existingAnnotation.tagIds];
-        
+
         // SMART REPLACEMENT LOGIC: If a normal tag is applied to a pending annotation, remove the pending tag.
         if (hasPendingTag && !isApplyingPendingTag) {
             finalExistingTags = finalExistingTags.filter(id => id !== pendingTag!.id);
@@ -399,6 +446,7 @@ export const useNovelEditorState = ({
     }
 
     if (newAnnotations.length > 0 || updatesToExistingAnnotations.size > 0) {
+        // First update local state for immediate UI feedback
         setAllUserAnnotations(prevAnnotations => {
             const updatedAnnotations = prevAnnotations.map(ann => {
                 if (updatesToExistingAnnotations.has(ann.id)) {
@@ -408,6 +456,34 @@ export const useNovelEditorState = ({
             });
             return [...updatedAnnotations, ...newAnnotations];
         });
+
+        // Then persist to backend
+        try {
+            // Create new annotations in backend
+            for (const annotation of newAnnotations) {
+                await annotationsApi.create({
+                    text: annotation.text,
+                    startIndex: annotation.startIndex,
+                    endIndex: annotation.endIndex,
+                    novelId: annotation.novelId,
+                    tagIds: annotation.tagIds,
+                    isPotentiallyMisaligned: annotation.isPotentiallyMisaligned,
+                });
+            }
+
+            // Update existing annotations in backend
+            for (const [annotationId, newTagIds] of updatesToExistingAnnotations.entries()) {
+                const annotation = allUserAnnotations.find(a => a.id === annotationId);
+                if (annotation) {
+                    await annotationsApi.update(annotationId, {
+                        tagIds: newTagIds,
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('Failed to save annotations to backend:', error);
+            alert('保存标注失败,请稍后重试');
+        }
     }
   }, [currentUser, currentUserTags, novel.id, allUserAnnotations, setAllUserAnnotations, pendingTag]);
   
@@ -416,19 +492,17 @@ export const useNovelEditorState = ({
 
     if (editorMode === 'read') {
         setActiveTagIdInternal(tagId);
-        if (tagId) { 
-            setSelectedChapterId(null); 
-            setCurrentSelection(null);
-        }
+        // 不再清空章节选择,保留用户的章节选择状态
+        setCurrentSelection(null);
         return;
     }
-    
+
     if (currentSelection) {
       _applyTagsToSegment(currentSelection, [tagId]);
-      setCurrentSelection(null); 
+      setCurrentSelection(null);
     }
-    
-    setActiveTagIdInternal(tagId); 
+
+    setActiveTagIdInternal(tagId);
   };
   
   const handleCreatePendingAnnotation = useCallback(() => {
@@ -439,28 +513,37 @@ export const useNovelEditorState = ({
   }, [currentSelection, pendingTag, _applyTagsToSegment]);
 
   const selectTagForReadMode = (tagId: string | null) => {
-    setGlobalFilterTagNameInternal(null); 
-    if (editorMode !== 'read') return; 
+    setGlobalFilterTagNameInternal(null);
+    if (editorMode !== 'read') return;
     setActiveTagIdInternal(tagId);
-    if (tagId) { 
-        setSelectedChapterId(null);
-        setCurrentSelection(null);
-    }
+    // 不再清空章节选择,保留用户的章节选择状态
+    setCurrentSelection(null);
   };
 
   const handleTagGlobalSearch = (tagName: string) => {
     setGlobalFilterTagNameInternal(tagName);
     setActiveTagIdInternal(null);
+    // 全局搜索时清空章节选择是合理的,因为要显示全文搜索结果
     setSelectedChapterId(null);
     setCurrentSelection(null);
   };
 
-  const handleDeleteAnnotation = useCallback((annotationId: string) => {
+  const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
     if (!currentUser?.id) return;
+
+    // First update local state for immediate UI feedback
     setAllUserAnnotations(prev =>
       prev.filter(ann => ann.id !== annotationId || ann.userId !== currentUser.id)
     );
     setCurrentSelection(null);
+
+    // Then delete from backend
+    try {
+      await annotationsApi.delete(annotationId);
+    } catch (error) {
+      console.error('Failed to delete annotation from backend:', error);
+      alert('删除标注失败,请稍后重试');
+    }
   }, [currentUser, setAllUserAnnotations]);
 
   // --- Storyline Handlers ---

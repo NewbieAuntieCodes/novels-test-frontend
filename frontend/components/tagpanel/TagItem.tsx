@@ -195,12 +195,12 @@ const TagItem: React.FC<TagItemProps> = ({
       aria-selected={isActive}
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleListItemClick(); }}
-      draggable={editorMode === 'edit' && !isEditingThisColor && !isEditingThisName}
-      onDragStart={(e) => editorMode === 'edit' && !isEditingThisColor && !isEditingThisName && onDragStart(e, tag.id)}
-      onDragOver={(e) => editorMode === 'edit' && onDragOverItem(e, tag.id)}
-      onDragLeave={(e) => editorMode === 'edit' && onDragLeaveItem(e, tag.id)}
-      onDrop={(e) => editorMode === 'edit' && onDropOnItem(e, tag.id)}
-      onDragEnd={editorMode === 'edit' ? onDragEnd : undefined}
+      draggable={editorMode === 'annotation' && !isEditingThisColor && !isEditingThisName}
+      onDragStart={(e) => editorMode === 'annotation' && !isEditingThisColor && !isEditingThisName && onDragStart(e, tag.id)}
+      onDragOver={(e) => editorMode === 'annotation' && onDragOverItem(e, tag.id)}
+      onDragLeave={(e) => editorMode === 'annotation' && onDragLeaveItem(e, tag.id)}
+      onDrop={(e) => editorMode === 'annotation' && onDropOnItem(e, tag.id)}
+      onDragEnd={editorMode === 'annotation' ? onDragEnd : undefined}
     >
       {editorMode === 'annotation' && isEditingThisColor ? (
         <InlineColorInput

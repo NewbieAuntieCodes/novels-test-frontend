@@ -150,6 +150,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const mainContentAreaRef = useRef<HTMLDivElement>(null);
   const [editorMode, setEditorMode] = useState<EditorMode>('annotation');
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
+  const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
 
   // 🆕 进入编辑器时加载小说全文和标注
   useEffect(() => {
@@ -163,42 +164,29 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           setNovels(prev => prev.map(n => n.id === novel.id ? fullNovel : n));
         }
 
-        // 2. 如果标注为空，只加载该小说的标注（不加载全部）
-        const novelAnnotations = allUserAnnotations.filter(a => a.novelId === novel.id);
-        if (novelAnnotations.length === 0) {
-          // ✅ 修复：只请求当前小说的标注
-          const token = localStorage.getItem('authToken'); // ✅ 修正：应该是 authToken
-          const response = await fetch(`http://localhost:3001/api/annotations?novelId=${novel.id}`, {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`,
-            },
-          });
+        // 2. 如果该小说的标注未加载过，从后端加载
+        if (!loadedAnnotationsForNovelIds.has(novel.id)) {
+          const annotationsData = await annotationsApi.getAll({ novelId: novel.id });
 
-          if (!response.ok) {
-            throw new Error(`加载标注失败: ${response.status} ${response.statusText}`);
-          }
-
-          const data = await response.json();
-
-          // 检查是否是数组
-          if (!Array.isArray(data)) {
-            console.error('标注数据格式错误:', data);
-            throw new Error('标注数据格式错误');
-          }
-
-          // 转换后端返回的标注格式
-          const formattedAnnotations = data.map((ann: any) => ({
+          // 后端已经返回了正确的格式,包含 tagIds 字段
+          const formattedAnnotations = annotationsData.map((ann: any) => ({
             id: ann.id,
-            tagIds: ann.tags.map((t: any) => t.tagId),
+            tagIds: ann.tagIds || [], // 后端已经有 tagIds 字段
             text: ann.text,
             startIndex: ann.startIndex,
             endIndex: ann.endIndex,
             novelId: ann.novelId,
             userId: ann.userId,
+            isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
           }));
 
-          setAllUserAnnotations(prev => [...prev, ...formattedAnnotations]);
+          setAllUserAnnotations(prev => {
+            // 移除该小说的旧标注，添加新加载的标注
+            const withoutCurrentNovel = prev.filter(a => a.novelId !== novel.id);
+            return [...withoutCurrentNovel, ...formattedAnnotations];
+          });
+
+          setLoadedAnnotationsForNovelIds(prev => new Set(prev).add(novel.id));
         }
       } catch (error) {
         console.error('加载小说数据错误:', error);

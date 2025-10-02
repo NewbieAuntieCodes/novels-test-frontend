@@ -222,7 +222,7 @@ const TagList: React.FC<TagListProps> = ({
             level={level}
             isActive={activeTagId === tag.id && !editingColorTagId && !editingNameData}
             isBeingDragged={draggedTagId === tag.id}
-            isDragOverTarget={dragOverTagId === tag.id && editorMode === 'edit'}
+            isDragOverTarget={dragOverTagId === tag.id && editorMode === 'annotation'}
             isEditingThisColor={editingColorTagId === tag.id}
             isEditingThisName={editingNameData?.id === tag.id}
             currentColorInputValueForEdit={editingColorTagId === tag.id ? currentColorInputValue : tag.color}
@@ -251,12 +251,12 @@ const TagList: React.FC<TagListProps> = ({
 
   return (
     <List
-      isDragOver={isDraggingOverListArea && !dragOverTagId && editorMode === 'edit'}
+      isDragOver={isDraggingOverListArea && !dragOverTagId && editorMode === 'annotation'}
       role="listbox"
       aria-label="可用标签"
-      onDragOver={editorMode === 'edit' ? handleDragOverList : undefined}
-      onDragLeave={editorMode === 'edit' ? handleDragLeaveList : undefined}
-      onDrop={editorMode === 'edit' ? handleDropOnList : undefined}
+      onDragOver={editorMode === 'annotation' ? handleDragOverList : undefined}
+      onDragLeave={editorMode === 'annotation' ? handleDragLeaveList : undefined}
+      onDrop={editorMode === 'annotation' ? handleDropOnList : undefined}
     >
       {tags.length > 0 ? (
         renderTagsRecursive(null)

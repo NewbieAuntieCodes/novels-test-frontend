@@ -262,8 +262,10 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateTagName = (tagId: string, newName: string) => {
+  const handleUpdateTagName = async (tagId: string, newName: string) => {
     if (!currentUser) return;
+
+    // 先更新本地状态,提供即时反馈
     setAllUserTags(prevTags =>
       prevTags.map(tag =>
         tag.id === tagId && tag.userId === currentUser.id
@@ -271,6 +273,14 @@ const App: React.FC = () => {
         : tag
       )
     );
+
+    // 然后保存到后端
+    try {
+      await tagsApi.update(tagId, { name: newName });
+    } catch (error) {
+      console.error('更新标签名称到后端失败:', error);
+      alert('更新标签名称失败,请稍后重试');
+    }
   };
   
   const handleUpdateTagColor = (tagId: string, newColor: string) => { 
