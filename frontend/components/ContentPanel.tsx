@@ -404,7 +404,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                          }
                        }}
                        colors={anchorColors}
-                       onClick={(e) => setPopoverState({ anchor: anchorsHere[0], position: positionForNewAnchor, target: e.currentTarget as HTMLElement })}
+                       onClick={(e) => setPopoverState({ anchor: anchorsHere[0], position: anchorsHere[0].position, target: e.currentTarget as HTMLElement })}
                      >
                        <AnchorTooltip>
                          {anchorsHere.map(a => a.description).join('\n---\n')}

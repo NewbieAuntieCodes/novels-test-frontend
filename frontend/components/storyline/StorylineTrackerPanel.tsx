@@ -35,9 +35,9 @@ const AnchorList = styled.ul`
 const AnchorItem = styled.li`
   background-color: ${COLORS.white};
   border: 1px solid ${COLORS.gray300};
-  padding: ${SPACING.md};
-  margin-bottom: ${SPACING.sm};
-  border-radius: ${FONTS.sizeSmall};
+  padding: ${SPACING.lg};
+  margin-bottom: ${SPACING.md};
+  border-radius: ${BORDERS.radius};
   box-shadow: 0 1px 3px rgba(0,0,0,0.03);
   cursor: pointer;
   transition: box-shadow 0.2s, border-color 0.2s;
@@ -54,7 +54,9 @@ const AnchorDescription = styled.p`
   margin: 0;
   color: ${COLORS.text};
   word-break: break-word;
-  line-height: 1.5;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  font-size: ${FONTS.sizeBase};
 `;
 
 const EditingTextarea = styled.textarea`
