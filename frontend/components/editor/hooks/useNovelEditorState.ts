@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo, Dispatch, SetStateAction } f
 import type { Novel, Tag, Annotation, SelectionDetails, Chapter, User, Storyline, PlotAnchor } from '../../../types';
 import { generateId, getAllAncestorTagIds, getAllDescendantTagIds, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME } from '../../../utils';
 import type { EditorMode } from '../NovelEditorPage';
-import { annotationsApi, tagsApi } from '../../../api';
+import { annotationsApi, tagsApi, novelsApi } from '../../../api';
 
 interface UseNovelEditorStateProps {
   novel: Novel;
@@ -553,74 +553,145 @@ export const useNovelEditorState = ({
     setScrollToAnchorId(null);
   };
 
-  const handleAddStoryline = (name: string, color: string, parentId: string | null) => {
+  const handleAddStoryline = async (name: string, color: string, parentId: string | null) => {
     const newStoryline: Storyline = { id: generateId(), name, color, parentId };
-    setNovels(novels => novels.map(n => 
-      n.id === novel.id 
-        ? { ...n, storylines: [...(n.storylines || []), newStoryline] } 
+    const updatedStorylines = [...(novel.storylines || []), newStoryline];
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, storylines: updatedStorylines }
         : n
     ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { storylines: updatedStorylines });
+    } catch (error) {
+      console.error('保存剧情线到后端失败:', error);
+      alert('创建剧情线失败,请稍后重试');
+    }
   };
-  
-  const handleUpdateStoryline = (storylineId: string, updates: Partial<Storyline>) => {
-    setNovels(novels => novels.map(n => 
-      n.id === novel.id 
-        ? { ...n, storylines: (n.storylines || []).map(s => s.id === storylineId ? { ...s, ...updates } : s) }
+
+  const handleUpdateStoryline = async (storylineId: string, updates: Partial<Storyline>) => {
+    const updatedStorylines = (novel.storylines || []).map(s =>
+      s.id === storylineId ? { ...s, ...updates } : s
+    );
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, storylines: updatedStorylines }
         : n
     ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { storylines: updatedStorylines });
+    } catch (error) {
+      console.error('更新剧情线到后端失败:', error);
+      alert('更新剧情线失败,请稍后重试');
+    }
   };
 
-  const handleDeleteStoryline = (storylineId: string) => {
-    setNovels(novels => novels.map(n => {
-      if (n.id !== novel.id) return n;
-      
-      const currentStorylines = n.storylines || [];
-      const storylineToDelete = currentStorylines.find(s => s.id === storylineId);
-      if (!storylineToDelete) return n;
+  const handleDeleteStoryline = async (storylineId: string) => {
+    const currentStorylines = novel.storylines || [];
+    const storylineToDelete = currentStorylines.find(s => s.id === storylineId);
+    if (!storylineToDelete) return;
 
-      const newParentId = storylineToDelete.parentId;
+    const newParentId = storylineToDelete.parentId;
 
-      let updatedStorylines = currentStorylines
-        .filter(s => s.id !== storylineId) // Remove the storyline
-        .map(s => {
-          if (s.parentId === storylineId) { // Find children
-            return { ...s, parentId: newParentId }; // Re-parent them
-          }
-          return s;
-        });
+    const updatedStorylines = currentStorylines
+      .filter(s => s.id !== storylineId)
+      .map(s => {
+        if (s.parentId === storylineId) {
+          return { ...s, parentId: newParentId };
+        }
+        return s;
+      });
 
-      const updatedPlotAnchors = (n.plotAnchors || []).map(anchor => ({
-        ...anchor,
-        storylineIds: anchor.storylineIds.filter(id => id !== storylineId)
-      })).filter(anchor => anchor.storylineIds.length > 0);
+    const updatedPlotAnchors = (novel.plotAnchors || []).map(anchor => ({
+      ...anchor,
+      storylineIds: anchor.storylineIds.filter(id => id !== storylineId)
+    })).filter(anchor => anchor.storylineIds.length > 0);
 
-      return { ...n, storylines: updatedStorylines, plotAnchors: updatedPlotAnchors };
-    }));
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, storylines: updatedStorylines, plotAnchors: updatedPlotAnchors }
+        : n
+    ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, {
+        storylines: updatedStorylines,
+        plotAnchors: updatedPlotAnchors
+      });
+    } catch (error) {
+      console.error('删除剧情线到后端失败:', error);
+      alert('删除剧情线失败,请稍后重试');
+    }
   };
   
-  const handleAddPlotAnchor = (description: string, position: number, storylineIds: string[]) => {
+  const handleAddPlotAnchor = async (description: string, position: number, storylineIds: string[]) => {
     const newAnchor: PlotAnchor = { id: generateId(), description, position, storylineIds };
-    setNovels(novels => novels.map(n => 
-      n.id === novel.id 
-        ? { ...n, plotAnchors: [...(n.plotAnchors || []), newAnchor] } 
+    const updatedPlotAnchors = [...(novel.plotAnchors || []), newAnchor];
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, plotAnchors: updatedPlotAnchors }
         : n
     ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
+    } catch (error) {
+      console.error('保存剧情锚点到后端失败:', error);
+      alert('创建剧情锚点失败,请稍后重试');
+    }
   };
 
-  const handleUpdatePlotAnchor = (anchorId: string, updates: Partial<PlotAnchor>) => {
-    setNovels(novels => novels.map(n => 
-      n.id === novel.id 
-        ? { ...n, plotAnchors: (n.plotAnchors || []).map(a => a.id === anchorId ? { ...a, ...updates } : a) }
+  const handleUpdatePlotAnchor = async (anchorId: string, updates: Partial<PlotAnchor>) => {
+    const updatedPlotAnchors = (novel.plotAnchors || []).map(a =>
+      a.id === anchorId ? { ...a, ...updates } : a
+    );
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, plotAnchors: updatedPlotAnchors }
         : n
     ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
+    } catch (error) {
+      console.error('更新剧情锚点到后端失败:', error);
+      alert('更新剧情锚点失败,请稍后重试');
+    }
   };
-  
-  const handleDeletePlotAnchor = (anchorId: string) => {
-    setNovels(novels => novels.map(n => 
-      n.id === novel.id 
-        ? { ...n, plotAnchors: (n.plotAnchors || []).filter(a => a.id !== anchorId) } 
+
+  const handleDeletePlotAnchor = async (anchorId: string) => {
+    const updatedPlotAnchors = (novel.plotAnchors || []).filter(a => a.id !== anchorId);
+
+    // 先更新本地状态
+    setNovels(novels => novels.map(n =>
+      n.id === novel.id
+        ? { ...n, plotAnchors: updatedPlotAnchors }
         : n
     ));
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
+    } catch (error) {
+      console.error('删除剧情锚点到后端失败:', error);
+      alert('删除剧情锚点失败,请稍后重试');
+    }
   };
 
 
