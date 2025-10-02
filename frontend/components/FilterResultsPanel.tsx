@@ -212,7 +212,7 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
 
             return (
               <AnnotationItem key={ann.id} role="listitem">
-                <AnnotationText>"{ann.text}"</AnnotationText>
+                <AnnotationText>"{ann.text || '[无文本内容]'}"</AnnotationText>
                 <AnnotationTagsContainer>
                   {tagGroups.map((group, index) => {
                     const sortedGroup = group

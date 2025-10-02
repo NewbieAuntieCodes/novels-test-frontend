@@ -65,7 +65,7 @@ export const useNovelEditorState = ({
   );
   
   useEffect(() => {
-    if (editorMode === 'read') {
+    if (editorMode === 'tag') {
       // 不再清空章节选择,保留用户的章节选择状态
       // if (activeTagId) {
       //   setSelectedChapterId(null);
@@ -345,7 +345,7 @@ export const useNovelEditorState = ({
   };
 
   const handleTextSelection = useCallback(() => {
-    if (editorMode !== 'annotation') {
+    if (editorMode !== 'annotation' && editorMode !== 'tag') {
       setCurrentSelection(null);
       return;
     }
@@ -501,18 +501,13 @@ export const useNovelEditorState = ({
   const applyTagToSelection = (tagId: string) => {
     setGlobalFilterTagNameInternal(null);
 
-    if (editorMode === 'read') {
-        setActiveTagIdInternal(tagId);
-        // 不再清空章节选择,保留用户的章节选择状态
-        setCurrentSelection(null);
-        return;
-    }
-
+    // 如果有选中的文本，创建标注
     if (currentSelection) {
       _applyTagsToSegment(currentSelection, [tagId]);
       setCurrentSelection(null);
     }
 
+    // 设置当前激活的标签（用于筛选显示）
     setActiveTagIdInternal(tagId);
   };
   
@@ -525,7 +520,7 @@ export const useNovelEditorState = ({
 
   const selectTagForReadMode = (tagId: string | null) => {
     setGlobalFilterTagNameInternal(null);
-    if (editorMode !== 'read') return;
+    if (editorMode !== 'tag') return;
     setActiveTagIdInternal(tagId);
     // 不再清空章节选择,保留用户的章节选择状态
     setCurrentSelection(null);
@@ -665,32 +660,6 @@ export const useNovelEditorState = ({
     }
   };
 
-  // 创建待归类锚点（用于标注模式下的快速标记）
-  const handleAddPendingAnchor = async (position: number) => {
-    const newAnchor: PlotAnchor = {
-      id: generateId(),
-      description: '',
-      position,
-      storylineIds: [],
-      isPending: true,
-    };
-    const updatedPlotAnchors = [...(novel.plotAnchors || []), newAnchor];
-
-    // 先更新本地状态
-    setNovels(novels => novels.map(n =>
-      n.id === novel.id
-        ? { ...n, plotAnchors: updatedPlotAnchors }
-        : n
-    ));
-
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
-    } catch (error) {
-      console.error('保存待归类锚点到后端失败:', error);
-      alert('创建待归类锚点失败,请稍后重试');
-    }
-  };
 
   const handleUpdatePlotAnchor = async (anchorId: string, updates: Partial<PlotAnchor>) => {
     const updatedPlotAnchors = (novel.plotAnchors || []).map(a =>
@@ -796,7 +765,6 @@ export const useNovelEditorState = ({
     handleUpdateStoryline,
     handleDeleteStoryline,
     handleAddPlotAnchor,
-    handleAddPendingAnchor,
     handleUpdatePlotAnchor,
     handleDeletePlotAnchor,
   };

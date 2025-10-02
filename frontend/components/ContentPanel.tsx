@@ -13,23 +13,22 @@ import PlotAnchorPopover from './storyline/PlotAnchorPopover';
 
 interface ContentPanelProps {
   novel: Novel;
-  onNovelTextChange: (text: string) => void; 
+  onNovelTextChange: (text: string) => void;
   onChapterTextChange: (chapterId: string, newContent: string) => void;
   onTextSelection: () => void;
   annotations: Annotation[];
   getTagById: (id: string) => Tag | undefined;
   selectedChapter: Chapter | null;
   style?: CSSProperties;
-  viewMode: 'full' | 'snippet'; 
+  viewMode: 'full' | 'snippet';
   activeFilterTagDetails: Tag | null;
-  globalFilterTagName?: string | null; 
+  globalFilterTagName?: string | null;
   allNovelTags: Tag[];
   editorMode: EditorMode;
-  onDeleteAnnotation?: (annotationId: string) => void; 
+  onDeleteAnnotation?: (annotationId: string) => void;
   currentSelection: SelectionDetails | null;
   // Storyline Props
   onAddPlotAnchor: (description: string, position: number, storylineIds: string[]) => void;
-  onAddPendingAnchor?: (position: number) => void; // For annotation mode quick marking
   onUpdatePlotAnchor: (anchorId: string, updates: Partial<PlotAnchor>) => void;
   onDeletePlotAnchor: (anchorId: string) => void;
   scrollToAnchorId: string | null;
@@ -188,41 +187,6 @@ const SnippetSourceNovel = styled.p<{ effectiveColor?: string }>`
 
 const Placeholder = styled.p(globalPlaceholderTextStyles);
 
-const QuickActionToolbar = styled.div`
-  display: flex;
-  gap: ${SPACING.sm};
-  padding: ${SPACING.sm};
-  background-color: ${COLORS.gray100};
-  border-bottom: 1px solid ${COLORS.gray300};
-  align-items: center;
-`;
-
-const QuickMarkButton = styled.button`
-  padding: ${SPACING.xs} ${SPACING.md};
-  background-color: ${COLORS.warning};
-  color: ${COLORS.dark};
-  border: none;
-  border-radius: ${BORDERS.radius};
-  cursor: pointer;
-  font-size: ${FONTS.sizeSmall};
-  transition: all 0.2s;
-
-  &:hover {
-    opacity: 0.8;
-    box-shadow: ${SHADOWS.small};
-  }
-
-  &:disabled {
-    background-color: ${COLORS.gray400};
-    cursor: not-allowed;
-    opacity: 0.6;
-  }
-`;
-
-const ToolbarHint = styled.span`
-  font-size: ${FONTS.sizeSmall};
-  color: ${COLORS.textLight};
-`;
 
 // --- Storyline specific components ---
 const ParagraphWrapper = styled.div`
@@ -333,7 +297,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   viewMode, activeFilterTagDetails, globalFilterTagName, allNovelTags, editorMode,
   onDeleteAnnotation,
   currentSelection,
-  onAddPlotAnchor, onAddPendingAnchor, onDeletePlotAnchor, onUpdatePlotAnchor,
+  onAddPlotAnchor, onDeletePlotAnchor, onUpdatePlotAnchor,
   scrollToAnchorId, onScrollToAnchorComplete
 }) => {
   const [editedText, setEditedText] = useState('');
@@ -467,7 +431,86 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       );
     }
     
-    // --- OTHER MODES RENDERER (ANNOTATION, READ) ---
+    // --- ANNOTATION MODE RENDERER (with annotations only, no paragraph wrapping) ---
+    if (editorMode === 'annotation' && viewMode === 'full') {
+      const text = textForPreview;
+
+      // Get annotations for highlighting
+      const relevantAnnotations = annotations
+        .filter(ann => {
+          const annStartInView = ann.startIndex - displayOffsetForPreview;
+          const annEndInView = ann.endIndex - displayOffsetForPreview;
+          return annEndInView > 0 && annStartInView < text.length;
+        })
+        .sort((a, b) => a.startIndex - b.startIndex)
+        .slice(0, 500);
+
+      if (relevantAnnotations.length === 0 && text.trim()) {
+        return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+      }
+
+      let lastIndex = 0;
+      const parts: (string | React.ReactElement)[] = [];
+
+      relevantAnnotations.forEach((ann) => {
+        const annStartInView = Math.max(0, ann.startIndex - displayOffsetForPreview);
+        const annEndInView = Math.min(text.length, ann.endIndex - displayOffsetForPreview);
+
+        if (annStartInView >= text.length || annEndInView <= 0 || annStartInView >= annEndInView) return;
+
+        if (annStartInView > lastIndex) {
+          parts.push(text.substring(lastIndex, annStartInView));
+        }
+
+        const renderStart = Math.max(annStartInView, lastIndex);
+        if (annEndInView <= renderStart) return;
+
+        const annotationTagsInvolved = ann.tagIds.map(tid => getTagById(tid)).filter((t): t is Tag => !!t);
+        let primaryTagForHighlight: Tag | null = null;
+
+        if (annotationTagsInvolved.length > 0) {
+          let deepestLevel = -1;
+          const deepestTags: Tag[] = [];
+          for (const tag of annotationTagsInvolved) {
+            const depth = tagDepthCache.get(tag.id) ?? 0;
+            if (depth > deepestLevel) {
+              deepestLevel = depth;
+              deepestTags.length = 0;
+              deepestTags.push(tag);
+            } else if (depth === deepestLevel) {
+              deepestTags.push(tag);
+            }
+          }
+          primaryTagForHighlight = deepestTags.length > 0
+            ? [...deepestTags].sort((a,b) => a.name.localeCompare(b.name))[0]
+            : [...annotationTagsInvolved].sort((a,b) => a.name.localeCompare(b.name))[0];
+        }
+
+        const tagNames = annotationTagsInvolved.map(t => t.name).join(' | ');
+        const bgColor = primaryTagForHighlight?.color || COLORS.gray300;
+        const color = primaryTagForHighlight ? getContrastingTextColor(primaryTagForHighlight.color) : COLORS.black;
+
+        parts.push(
+          <AnnotatedSpan
+            key={`${ann.id}-${ann.startIndex}`}
+            style={{ backgroundColor: bgColor, color: color }}
+            isMisaligned={ann.isPotentiallyMisaligned}
+            title={ann.isPotentiallyMisaligned ? `标签: ${tagNames} (此标注可能已错位)` : `标签: ${tagNames}`}
+          >
+            {text.substring(renderStart, annEndInView)}
+          </AnnotatedSpan>
+        );
+        lastIndex = Math.max(lastIndex, annEndInView);
+      });
+
+      if (lastIndex < text.length) {
+        parts.push(text.substring(lastIndex));
+      }
+
+      return <div style={{ whiteSpace: 'pre-wrap' }}>{parts.map((part, i) => <React.Fragment key={`part-${i}`}>{part}</React.Fragment>)}</div>;
+    }
+
+    // --- OTHER MODES RENDERER (TAG READ) ---
 
     if (viewMode === 'snippet') {
       let snippets: { id: string; text: string; tags: Tag[]; originalAnnotationId: string; isPotentiallyMisaligned?: boolean; sourceNovelId?: string; sourceNovelTitle?: string; }[] = [];
@@ -549,12 +592,12 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                 bgColor={bgColor}
               >
                 {snippet.sourceNovelTitle && <SnippetSourceNovel effectiveColor={textColor}>来自: {snippet.sourceNovelTitle}</SnippetSourceNovel>}
-                <SnippetParagraph style={{ color: textColor }}>{snippet.text}</SnippetParagraph>
+                <SnippetParagraph style={{ color: textColor }}>{snippet.text || '[无文本内容]'}</SnippetParagraph>
                 {onDeleteAnnotation && (
-                  <DeleteSnippetButton 
+                  <DeleteSnippetButton
                     effectiveColor={textColor}
-                    onClick={() => onDeleteAnnotation(snippet.originalAnnotationId)} 
-                    aria-label={`删除标注: ${snippet.text.substring(0,20)}...`} 
+                    onClick={() => onDeleteAnnotation(snippet.originalAnnotationId)}
+                    aria-label={`删除标注: ${snippet.text?.substring(0,20) || '无文本'}...`}
                     title="删除此标注"
                   >
                     ✕
@@ -739,15 +782,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
   };
 
-  const handleQuickMarkPosition = () => {
-    if (!onAddPendingAnchor || !currentSelection) return;
-
-    // 使用当前选择的起始位置作为锚点位置
-    const offset = selectedChapter ? selectedChapter.originalStartIndex : 0;
-    const position = currentSelection.startIndex + offset;
-
-    onAddPendingAnchor(position);
-  };
 
   return (
     <Panel style={style}>
@@ -766,23 +800,9 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
       {(editorMode === 'annotation' || editorMode === 'tag' || editorMode === 'storyline') && (
         <ContentPreviewContainer>
-          {editorMode === 'annotation' && onAddPendingAnchor && (
-            <QuickActionToolbar>
-              <QuickMarkButton
-                onClick={handleQuickMarkPosition}
-                disabled={!currentSelection}
-                title="标记当前选中位置为待归类锚点"
-              >
-                📍 标记剧情位置
-              </QuickMarkButton>
-              <ToolbarHint>
-                {currentSelection ? '选中文本后点击按钮快速标记' : '请先选中文本'}
-              </ToolbarHint>
-            </QuickActionToolbar>
-          )}
           <ContentDisplay
             id="content-display-area"
-            onMouseUp={editorMode === 'annotation' ? onTextSelection : undefined}
+            onMouseUp={(editorMode === 'annotation' || editorMode === 'tag') ? onTextSelection : undefined}
             role="article"
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}

@@ -120,6 +120,7 @@ const DeleteButton = styled.button`
   &:hover { text-decoration: underline; }
 `;
 
+
 const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
   targetElement,
   storylines,

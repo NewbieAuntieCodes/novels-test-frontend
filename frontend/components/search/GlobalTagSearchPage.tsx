@@ -350,7 +350,7 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
 
                 return (
                   <AnnotationItem key={ann.id}>
-                    <AnnotationText>"{ann.text}"</AnnotationText>
+                    <AnnotationText>"{ann.text || '[无文本内容]'}"</AnnotationText>
                     <SourceNovelText>
                       来源: <SourceNovelLink onClick={() => navigateTo(`#/edit/${ann.novelId}`)} role="link" tabIndex={0} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && navigateTo(`#/edit/${ann.novelId}`)}>
                               {getNovelTitleById(ann.novelId)}

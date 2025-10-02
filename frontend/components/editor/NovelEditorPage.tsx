@@ -337,15 +337,51 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             currentSelection={editorState.currentSelection}
             onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
           />
-        ) : (
-          <TagSelectionPanel
+        ) : editorMode === 'annotation' ? (
+          <TagPanel
             style={{ flexBasis: `${panelWidths[1]}%` }}
             tags={editorState.currentUserTags}
+            onAddTag={editorState.handleAddTag}
             activeTagId={editorState.activeTagId}
             onApplyTagToSelection={editorState.applyTagToSelection}
+            onSelectTagForReadMode={editorState.selectTagForReadMode}
+            onUpdateTagParent={editorState.handleUpdateTagParent}
+            onUpdateTagColor={editorState.handleUpdateTagColor}
+            onUpdateTagName={onUpdateTagName}
+            editorMode={editorMode}
+            onTagGlobalSearch={editorState.handleTagGlobalSearch}
             currentSelection={editorState.currentSelection}
             onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
           />
+        ) : (
+          <div style={{
+            flexBasis: `${panelWidths[1]}%`,
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            gap: '0'
+          }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <TagSelectionPanel
+                style={{ height: '100%', overflow: 'auto' }}
+                tags={editorState.currentUserTags}
+                activeTagId={editorState.activeTagId}
+                onApplyTagToSelection={editorState.applyTagToSelection}
+                onAddTag={editorState.handleAddTag}
+              />
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <StorylinePanel
+                style={{ height: '100%' }}
+                storylines={novel.storylines || []}
+                activeStorylineId={editorState.activeStorylineId}
+                onAddStoryline={editorState.handleAddStoryline}
+                onUpdateStoryline={editorState.handleUpdateStoryline}
+                onDeleteStoryline={editorState.handleDeleteStoryline}
+                onSelectStoryline={editorState.handleSelectStoryline}
+              />
+            </div>
+          </div>
         )}
         
         <Resizer
@@ -376,7 +412,6 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           currentSelection={editorState.currentSelection}
           // Storyline props
           onAddPlotAnchor={editorState.handleAddPlotAnchor}
-          onAddPendingAnchor={editorMode === 'annotation' ? editorState.handleAddPendingAnchor : undefined}
           onDeletePlotAnchor={editorState.handleDeletePlotAnchor}
           onUpdatePlotAnchor={editorState.handleUpdatePlotAnchor}
           scrollToAnchorId={editorState.scrollToAnchorId}

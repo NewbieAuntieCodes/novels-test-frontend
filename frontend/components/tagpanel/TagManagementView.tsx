@@ -94,7 +94,7 @@ const TagManagementView: React.FC<TagManagementViewProps> = ({
   return (
     <TagManagementContainer>
       <Title>标签管理</Title>
-      
+
       {editorMode === 'annotation' && (
         <>
           <PendingActionButton
@@ -110,6 +110,14 @@ const TagManagementView: React.FC<TagManagementViewProps> = ({
             activeTagId={activeTagId}
           />
         </>
+      )}
+
+      {editorMode === 'tag' && (
+        <TagCreationForm
+          tags={tags}
+          onAddTag={onAddTag}
+          activeTagId={activeTagId}
+        />
       )}
 
       <TagListContainer>
