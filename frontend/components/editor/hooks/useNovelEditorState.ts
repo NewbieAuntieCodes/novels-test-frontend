@@ -459,9 +459,10 @@ export const useNovelEditorState = ({
 
         // Then persist to backend
         try {
-            // Create new annotations in backend
+            // Create new annotations in backend and replace temporary IDs with real IDs
+            const idMapping = new Map<string, string>(); // tempId -> realId
             for (const annotation of newAnnotations) {
-                await annotationsApi.create({
+                const savedAnnotation = await annotationsApi.create({
                     text: annotation.text,
                     startIndex: annotation.startIndex,
                     endIndex: annotation.endIndex,
@@ -469,6 +470,16 @@ export const useNovelEditorState = ({
                     tagIds: annotation.tagIds,
                     isPotentiallyMisaligned: annotation.isPotentiallyMisaligned,
                 });
+                idMapping.set(annotation.id, savedAnnotation.id);
+            }
+
+            // Replace temporary IDs with real IDs from backend
+            if (idMapping.size > 0) {
+                setAllUserAnnotations(prevAnnotations =>
+                    prevAnnotations.map(ann =>
+                        idMapping.has(ann.id) ? { ...ann, id: idMapping.get(ann.id)! } : ann
+                    )
+                );
             }
 
             // Update existing annotations in backend
