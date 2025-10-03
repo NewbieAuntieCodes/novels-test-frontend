@@ -8,6 +8,8 @@ interface NovelCreateRequest {
   chapters?: any[];
   storylines?: any[];
   plotAnchors?: any[];
+  category?: string;
+  subcategory?: string;
 }
 
 interface ChapterContentResponse {

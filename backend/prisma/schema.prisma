@@ -27,6 +27,8 @@ model Novel {
   chapters    Json?        // Chapter[] 存储为 JSON
   storylines  Json?        // Storyline[] 存储为 JSON
   plotAnchors Json?        // PlotAnchor[] 存储为 JSON
+  category    String?      // 大分类：男频小说、女频小说、电影剧本、电视剧剧本
+  subcategory String?      // 子分类：用户自定义
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   userId      String

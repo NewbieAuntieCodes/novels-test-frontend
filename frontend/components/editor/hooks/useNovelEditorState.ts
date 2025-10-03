@@ -37,17 +37,17 @@ export const useNovelEditorState = ({
   const [scrollToAnchorId, setScrollToAnchorId] = useState<string | null>(null);
 
 
-  // 🆕 标签属于当前小说（或全局标签，如"待标注"）
+  // 🆕 只显示当前小说的标签（不包含全局标签）
   const currentUserTags = useMemo(
     () => allUserTags.filter(t =>
-      t.userId === currentUser.id && (t.novelId === novel.id || t.novelId === null)
+      t.userId === currentUser.id && t.novelId === novel.id
     ),
     [allUserTags, currentUser.id, novel.id]
   );
 
   const pendingTag = useMemo(() =>
-    allUserTags.find(t => t.userId === currentUser.id && t.name === PENDING_ANNOTATION_TAG_NAME && t.novelId === null),
-    [allUserTags, currentUser.id]
+    allUserTags.find(t => t.userId === currentUser.id && t.name === PENDING_ANNOTATION_TAG_NAME && t.novelId === novel.id),
+    [allUserTags, currentUser.id, novel.id]
   );
 
   const annotationsForCurrentNovel = useMemo(
@@ -96,43 +96,43 @@ export const useNovelEditorState = ({
   }, [novel.chapters, selectedChapterId]);
 
 
-  const updateFullNovelTextAndAlignAnnotations = useCallback((newFullText: string, selectionHint?: { originalTitle: string; originalStartIndex: number }) => {
+  const updateFullNovelTextAndAlignAnnotations = useCallback(async (newFullText: string, selectionHint?: { originalTitle: string; originalStartIndex: number }) => {
     const normalizedNewFullText = newFullText.replace(/\r\n|\r/g, '\n');
 
     const updatedAnnotations = allUserAnnotations.map(ann => { // Operate on allUserAnnotations
       if (ann.novelId !== novel.id || ann.userId !== currentUser.id) return ann;
-      
+
       let newStartIndex = -1;
-      const searchWindowStart = Math.max(0, ann.startIndex - Math.min(ann.startIndex, 200)); 
-      const searchWindowEnd = Math.min(normalizedNewFullText.length, ann.startIndex + ann.text.length + 200); 
+      const searchWindowStart = Math.max(0, ann.startIndex - Math.min(ann.startIndex, 200));
+      const searchWindowEnd = Math.min(normalizedNewFullText.length, ann.startIndex + ann.text.length + 200);
       const textToSearchIn = normalizedNewFullText.substring(searchWindowStart, searchWindowEnd);
-      
+
       let localIndex = textToSearchIn.indexOf(ann.text);
       if (localIndex !== -1) {
           newStartIndex = searchWindowStart + localIndex;
-      } else { 
+      } else {
           newStartIndex = normalizedNewFullText.indexOf(ann.text);
       }
-      
+
       if (newStartIndex !== -1) {
         return {
           ...ann,
           startIndex: newStartIndex,
           endIndex: newStartIndex + ann.text.length,
-          isPotentiallyMisaligned: undefined, 
+          isPotentiallyMisaligned: undefined,
         };
       } else {
         return { ...ann, isPotentiallyMisaligned: true };
       }
     });
     setAllUserAnnotations(updatedAnnotations); // Update global annotations
-    
+
     const newChapters = splitTextIntoChapters(normalizedNewFullText);
 
-    setNovels(prevNovels => prevNovels.map(n => 
-      n.id === novel.id ? { ...n, text: normalizedNewFullText, chapters: newChapters } : n 
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, text: normalizedNewFullText, chapters: newChapters } : n
     ));
-    
+
     if (selectionHint) {
         let chapterToSelect = newChapters.find(c =>
             c.originalStartIndex <= selectionHint.originalStartIndex && c.originalEndIndex > selectionHint.originalStartIndex
@@ -143,22 +143,46 @@ export const useNovelEditorState = ({
         }
         setSelectedChapterId(chapterToSelect ? chapterToSelect.id : null);
     } else {
-        setSelectedChapterId(null); 
+        setSelectedChapterId(null);
     }
-    
+
+    // 🆕 保存小说文本到数据库
+    try {
+      await novelsApi.update(novel.id, {
+        text: normalizedNewFullText,
+        chapters: newChapters,
+      });
+
+      // 🆕 保存所有修改后的标注位置到数据库
+      const annotationsToUpdate = updatedAnnotations.filter(
+        ann => ann.novelId === novel.id && ann.userId === currentUser.id
+      );
+      for (const ann of annotationsToUpdate) {
+        await annotationsApi.update(ann.id, {
+          startIndex: ann.startIndex,
+          endIndex: ann.endIndex,
+        });
+      }
+
+      console.log('[保存] 小说文本和标注位置已保存到数据库');
+    } catch (error) {
+      console.error('[保存] 保存到数据库失败:', error);
+      alert('保存失败，请重试');
+    }
+
   }, [allUserAnnotations, novel.id, currentUser.id, setAllUserAnnotations, setNovels]);
   
   const handleNovelTextChange = (text: string) => {
     updateFullNovelTextAndAlignAnnotations(text);
   };
   
-  const handleChapterTextChange = (chapterId: string, newContent: string) => {
+  const handleChapterTextChange = async (chapterId: string, newContent: string) => {
     if (!novel.chapters) return;
     const chapterToUpdate = novel.chapters.find(c => c.id === chapterId);
     if (!chapterToUpdate) return;
-    
+
     const normalizedNewContent = newContent.replace(/\r\n|\r/g, '\n');
-    
+
     const textBefore = novel.text.substring(0, chapterToUpdate.originalStartIndex);
     const textAfter = novel.text.substring(chapterToUpdate.originalEndIndex);
     const newFullText = textBefore + normalizedNewContent + textAfter;
@@ -187,25 +211,25 @@ export const useNovelEditorState = ({
 
     const updatedAnnotations = allUserAnnotations.map(ann => {
       if (ann.novelId !== novel.id || ann.userId !== currentUser.id) return ann;
-      
+
       let newStartIndex = -1;
       const searchWindowStart = Math.max(0, ann.startIndex - 200);
       const searchWindowEnd = Math.min(newFullText.length, ann.endIndex + 200);
       const textToSearchIn = newFullText.substring(searchWindowStart, searchWindowEnd);
-      
+
       let localIndex = textToSearchIn.indexOf(ann.text);
       if (localIndex !== -1) {
           newStartIndex = searchWindowStart + localIndex;
-      } else { 
+      } else {
           newStartIndex = newFullText.indexOf(ann.text);
       }
-      
+
       if (newStartIndex !== -1) {
         return {
           ...ann,
           startIndex: newStartIndex,
           endIndex: newStartIndex + ann.text.length,
-          isPotentiallyMisaligned: undefined, 
+          isPotentiallyMisaligned: undefined,
         };
       } else {
         return { ...ann, isPotentiallyMisaligned: true };
@@ -213,11 +237,144 @@ export const useNovelEditorState = ({
     });
     setAllUserAnnotations(updatedAnnotations);
 
-    setNovels(prevNovels => prevNovels.map(n => 
-      n.id === novel.id ? { ...n, text: newFullText, chapters: updatedChapters } : n 
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, text: newFullText, chapters: updatedChapters } : n
     ));
-    
+
     setSelectedChapterId(chapterId);
+
+    // 🆕 保存章节修改到数据库
+    try {
+      await novelsApi.update(novel.id, {
+        text: newFullText,
+        chapters: updatedChapters,
+      });
+
+      // 🆕 保存所有修改后的标注位置到数据库
+      const annotationsToUpdate = updatedAnnotations.filter(
+        ann => ann.novelId === novel.id && ann.userId === currentUser.id
+      );
+      for (const ann of annotationsToUpdate) {
+        await annotationsApi.update(ann.id, {
+          startIndex: ann.startIndex,
+          endIndex: ann.endIndex,
+        });
+      }
+
+      console.log('[保存] 章节文本和标注位置已保存到数据库');
+    } catch (error) {
+      console.error('[保存] 保存到数据库失败:', error);
+      alert('保存失败，请重试');
+    }
+  };
+
+  const handleDeleteChapter = async (chapterId: string) => {
+    if (!novel.chapters) return;
+
+    const chapterToDelete = novel.chapters.find(c => c.id === chapterId);
+    if (!chapterToDelete) return;
+
+    // 从小说文本中删除该章节
+    const textBefore = novel.text.substring(0, chapterToDelete.originalStartIndex);
+    const textAfter = novel.text.substring(chapterToDelete.originalEndIndex);
+    const newFullText = textBefore + textAfter;
+
+    const deletedLength = chapterToDelete.originalEndIndex - chapterToDelete.originalStartIndex;
+
+    // 删除章节并更新后续章节的索引
+    const updatedChapters = novel.chapters
+      .filter(c => c.id !== chapterId)
+      .map(c => {
+        if (c.originalStartIndex > chapterToDelete.originalStartIndex) {
+          return {
+            ...c,
+            originalStartIndex: c.originalStartIndex - deletedLength,
+            originalEndIndex: c.originalEndIndex - deletedLength,
+          };
+        }
+        return c;
+      });
+
+    // 更新标注位置
+    const updatedAnnotations = allUserAnnotations.map(ann => {
+      if (ann.novelId !== novel.id || ann.userId !== currentUser.id) return ann;
+
+      // 如果标注在被删除的章节中，标记为失效
+      if (ann.startIndex >= chapterToDelete.originalStartIndex &&
+          ann.endIndex <= chapterToDelete.originalEndIndex) {
+        return { ...ann, isPotentiallyMisaligned: true };
+      }
+
+      // 如果标注在删除章节之后，更新位置
+      if (ann.startIndex >= chapterToDelete.originalEndIndex) {
+        return {
+          ...ann,
+          startIndex: ann.startIndex - deletedLength,
+          endIndex: ann.endIndex - deletedLength,
+        };
+      }
+
+      return ann;
+    });
+
+    setAllUserAnnotations(updatedAnnotations);
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, text: newFullText, chapters: updatedChapters } : n
+    ));
+
+    // 如果删除的是当前选中的章节，清空选择
+    if (selectedChapterId === chapterId) {
+      setSelectedChapterId(null);
+    }
+
+    // 保存到数据库
+    try {
+      await novelsApi.update(novel.id, {
+        text: newFullText,
+        chapters: updatedChapters,
+      });
+
+      // 保存所有修改后的标注位置到数据库
+      const annotationsToUpdate = updatedAnnotations.filter(
+        ann => ann.novelId === novel.id && ann.userId === currentUser.id
+      );
+      for (const ann of annotationsToUpdate) {
+        await annotationsApi.update(ann.id, {
+          startIndex: ann.startIndex,
+          endIndex: ann.endIndex,
+        });
+      }
+
+      console.log('[删除] 章节已删除并保存到数据库');
+    } catch (error) {
+      console.error('[删除] 保存到数据库失败:', error);
+      alert('删除章节失败，请重试');
+    }
+  };
+
+  const handleRenameChapter = async (chapterId: string, newTitle: string) => {
+    if (!novel.chapters) return;
+
+    const updatedChapters = novel.chapters.map(c =>
+      c.id === chapterId ? { ...c, title: newTitle } : c
+    );
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, chapters: updatedChapters } : n
+    ));
+
+    // 保存到数据库
+    try {
+      await novelsApi.update(novel.id, {
+        chapters: updatedChapters,
+      });
+
+      console.log('[重命名] 章节已重命名并保存到数据库');
+    } catch (error) {
+      console.error('[重命名] 保存到数据库失败:', error);
+      alert('重命名章节失败，请重试');
+    }
   };
 
   const handleSelectChapter = (chapterId: string | null) => {
@@ -749,6 +906,8 @@ export const useNovelEditorState = ({
     getTagById,
     handleNovelTextChange,
     handleChapterTextChange,
+    handleDeleteChapter,
+    handleRenameChapter,
     handleSelectChapter,
     handleAddTag,
     handleUpdateTagParent,
@@ -758,8 +917,8 @@ export const useNovelEditorState = ({
     selectTagForReadMode,
     activeTagDetails,
     annotationsToDisplayOrFilter,
-    globalFilterTagName, 
-    handleTagGlobalSearch, 
+    globalFilterTagName,
+    handleTagGlobalSearch,
     handleDeleteAnnotation,
     handleCreatePendingAnnotation,
     // Storyline exports

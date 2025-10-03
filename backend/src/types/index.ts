@@ -54,6 +54,8 @@ export interface UpdateNovelRequest {
   chapters?: Chapter[];
   storylines?: Storyline[];
   plotAnchors?: PlotAnchor[];
+  category?: string;
+  subcategory?: string;
 }
 
 export interface CreateTagRequest {

@@ -4,6 +4,9 @@ import type { Novel, User, TagTemplate } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, globalPlaceholderTextStyles } from '../../styles';
 import { tagTemplates as staticTagTemplates } from '../tagpanel/tagTemplates';
 import TagTemplateModal from './TagTemplateModal'; // Import the new modal component
+import CategoryModal from '../CategoryModal';
+
+const MAIN_CATEGORIES = ['男频小说', '女频小说', '电影剧本', '电视剧剧本'];
 
 interface NovelProjectsPageProps {
   novels: Novel[];
@@ -12,13 +15,14 @@ interface NovelProjectsPageProps {
   onUploadNovel: (title: string, text: string) => string | null | undefined;
   onSelectNovel: (id: string) => void;
   onDeleteNovel: (id: string) => void;
+  onUpdateNovelCategory: (novelId: string, category: string, subcategory: string) => void;
   onLogout: () => void;
   onNavigateToTagSearch: () => void;
   tagTemplates: TagTemplate[];
   onUpdateTemplates: (templates: TagTemplate[]) => void;
 }
 
-const ProjectsPage = styled.div`
+const ProjectsPage = styled.div<{ isDragging?: boolean }>`
   padding: ${SPACING.xl};
   display: flex;
   flex-direction: column;
@@ -27,6 +31,28 @@ const ProjectsPage = styled.div`
   box-sizing: border-box;
   overflow-y: auto;
   background-color: ${COLORS.background};
+  position: relative;
+
+  ${props => props.isDragging && `
+    &::after {
+      content: '拖放 .txt 文件到此处上传';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(0, 123, 255, 0.1);
+      border: 3px dashed ${COLORS.primary};
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: ${FONTS.sizeH2};
+      color: ${COLORS.primary};
+      font-weight: 600;
+      z-index: 1000;
+      pointer-events: none;
+    }
+  `}
 `;
 
 const ProjectsHeader = styled.header`
@@ -211,10 +237,17 @@ const NovelItem = styled.li`
   border-bottom: 1px solid ${COLORS.gray200};
   transition: background-color 0.15s;
   gap: ${SPACING.md};
-  
+
   &:hover {
     background-color: ${COLORS.gray100};
   }
+`;
+
+const NovelInfo = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.xs};
+  flex-grow: 1;
 `;
 
 const NovelTitle = styled.span`
@@ -222,12 +255,37 @@ const NovelTitle = styled.span`
   color: ${COLORS.primary};
   cursor: pointer;
   font-weight: 500;
-  flex-grow: 1;
   word-break: break-word;
 
   &:hover {
     text-decoration: underline;
   }
+`;
+
+const NovelCategoryInfo = styled.div`
+  display: flex;
+  gap: ${SPACING.sm};
+  align-items: center;
+  flex-wrap: wrap;
+`;
+
+const CategoryTag = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.white};
+  background-color: ${COLORS.info};
+  padding: ${SPACING.xs} ${SPACING.sm};
+  border-radius: ${SPACING.xs};
+  white-space: nowrap;
+`;
+
+const SubcategoryTag = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.info};
+  background-color: ${COLORS.gray100};
+  padding: ${SPACING.xs} ${SPACING.sm};
+  border-radius: ${SPACING.xs};
+  white-space: nowrap;
+  border: 1px solid ${COLORS.info};
 `;
 
 const NovelItemActions = styled.div`
@@ -238,6 +296,15 @@ const NovelItemActions = styled.div`
 
 const EditNovelButton = styled(BaseButton)`
   padding: ${SPACING.xs} ${SPACING.md};
+`;
+
+const CategoryButton = styled(BaseButton)`
+  background-color: ${COLORS.info};
+  padding: ${SPACING.xs} ${SPACING.md};
+
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.infoHover};
+  }
 `;
 
 const DeleteNovelButton = styled(BaseButton)`
@@ -262,14 +329,63 @@ const ToolsContainer = styled.div`
     flex-wrap: wrap;
 `;
 
+const CategoryFilterSection = styled.div`
+  display: flex;
+  gap: ${SPACING.md};
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: ${SPACING.lg};
+`;
+
+const CategoryFilterLabel = styled.span`
+  font-size: ${FONTS.sizeBase};
+  color: ${COLORS.text};
+  font-weight: 500;
+`;
+
+const CategoryFilterButton = styled.button<{ isActive: boolean }>`
+  padding: ${SPACING.sm} ${SPACING.lg};
+  background-color: ${props => (props.isActive ? COLORS.primary : COLORS.white)};
+  color: ${props => (props.isActive ? COLORS.white : COLORS.text)};
+  border: ${BORDERS.width} ${BORDERS.style} ${props => (props.isActive ? COLORS.primary : COLORS.border)};
+  border-radius: ${BORDERS.radius};
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: ${FONTS.sizeSmall};
+
+  &:hover {
+    background-color: ${props => (props.isActive ? COLORS.primaryDark : COLORS.gray100)};
+    border-color: ${props => (props.isActive ? COLORS.primaryDark : COLORS.primary)};
+  }
+`;
+
+const SubcategorySection = styled.div`
+  margin-bottom: ${SPACING.lg};
+`;
+
+const SubcategoryGroup = styled.div`
+  margin-bottom: ${SPACING.xl};
+`;
+
+const SubcategoryTitle = styled.h4`
+  font-size: ${FONTS.sizeLarge};
+  color: ${COLORS.gray700};
+  margin: 0 0 ${SPACING.md} 0;
+  padding-left: ${SPACING.md};
+  border-left: 3px solid ${COLORS.primary};
+`;
+
 const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
-  novels, currentUser, onCreateNovel, onUploadNovel, onSelectNovel, onDeleteNovel, onLogout,
+  novels, currentUser, onCreateNovel, onUploadNovel, onSelectNovel, onDeleteNovel, onUpdateNovelCategory, onLogout,
   onNavigateToTagSearch, tagTemplates, onUpdateTemplates
 }) => {
   const [newNovelTitle, setNewNovelTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [categoryModalNovel, setCategoryModalNovel] = useState<Novel | null>(null);
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const handleCreate = () => {
     if (newNovelTitle.trim()) {
@@ -284,39 +400,71 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     }
   };
 
+  const processFile = async (file: File) => {
+    if (file.type === "text/plain" || file.name.endsWith('.txt')) {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const text = e.target?.result as string;
+        const titleFromFile = file.name.replace(/\.[^/.]+$/, "");
+        if (text !== null && text !== undefined) {
+          try {
+            setIsUploading(true);
+            const newNovelId = await onUploadNovel(titleFromFile || "未命名小说", text);
+            if (newNovelId) {
+              onSelectNovel(newNovelId);
+            }
+          } catch (error) {
+            console.error("上传失败:", error);
+          } finally {
+            setIsUploading(false);
+          }
+        } else {
+          alert("文件内容为空或读取失败。");
+        }
+      };
+      reader.onerror = () => {
+        alert("读取文件时出错。");
+        setIsUploading(false);
+      };
+      reader.readAsText(file);
+    } else {
+      alert("请上传 .txt 格式的文本文件。");
+    }
+  };
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      if (file.type === "text/plain") {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const text = e.target?.result as string;
-          const titleFromFile = file.name.replace(/\.[^/.]+$/, "");
-          if (text !== null && text !== undefined) {
-            try {
-              setIsUploading(true);
-              const newNovelId = await onUploadNovel(titleFromFile || "未命名小说", text);
-              if (newNovelId) {
-                onSelectNovel(newNovelId);
-              }
-            } catch (error) {
-              console.error("上传失败:", error);
-            } finally {
-              setIsUploading(false);
-            }
-          } else {
-            alert("文件内容为空或读取失败。");
-          }
-        };
-        reader.onerror = () => {
-          alert("读取文件时出错。");
-          setIsUploading(false);
-        };
-        reader.readAsText(file);
-      } else {
-        alert("请上传 .txt 格式的文本文件。");
-      }
+      await processFile(file);
       event.target.value = '';
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      await processFile(files[0]);
     }
   };
 
@@ -326,8 +474,38 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     }
   };
 
+  const handleCategoryModalSave = (category: string, subcategory: string) => {
+    if (categoryModalNovel) {
+      onUpdateNovelCategory(categoryModalNovel.id, category, subcategory);
+      setCategoryModalNovel(null);
+    }
+  };
+
+  // 筛选小说
+  const filteredNovels = selectedCategoryFilter
+    ? novels.filter(novel => novel.category === selectedCategoryFilter)
+    : novels;
+
+  // 按子分类分组
+  const novelsBySubcategory = filteredNovels.reduce((acc, novel) => {
+    const subcategory = novel.subcategory || '未分类';
+    if (!acc[subcategory]) {
+      acc[subcategory] = [];
+    }
+    acc[subcategory].push(novel);
+    return acc;
+  }, {} as Record<string, Novel[]>);
+
+  const subcategories = Object.keys(novelsBySubcategory).sort();
+
   return (
-    <ProjectsPage>
+    <ProjectsPage
+      isDragging={isDragging}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <ProjectsHeader>
         <HeaderTitle>我的小说项目</HeaderTitle>
         <UserInfo>
@@ -405,30 +583,71 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
 
       <Section>
         <SectionTitle>已有小说</SectionTitle>
+
+        {/* 分类筛选按钮 */}
+        <CategoryFilterSection>
+          <CategoryFilterLabel>筛选分类：</CategoryFilterLabel>
+          <CategoryFilterButton
+            isActive={selectedCategoryFilter === null}
+            onClick={() => setSelectedCategoryFilter(null)}
+          >
+            全部
+          </CategoryFilterButton>
+          {MAIN_CATEGORIES.map(category => (
+            <CategoryFilterButton
+              key={category}
+              isActive={selectedCategoryFilter === category}
+              onClick={() => setSelectedCategoryFilter(category)}
+            >
+              {category}
+            </CategoryFilterButton>
+          ))}
+        </CategoryFilterSection>
+
         {novels.length === 0 ? (
           <Placeholder>您还没有任何小说项目。尝试创建一个或上传一个吧！</Placeholder>
+        ) : filteredNovels.length === 0 ? (
+          <Placeholder>没有符合筛选条件的小说。</Placeholder>
         ) : (
-          <NovelList>
-            {novels.map(novel => (
-              <NovelItem key={novel.id}>
-                <NovelTitle
-                  onClick={() => onSelectNovel(novel.id)}
-                  tabIndex={0}
-                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onSelectNovel(novel.id)}
-                >
-                  {novel.title}
-                </NovelTitle>
-                <NovelItemActions>
-                  <EditNovelButton onClick={() => onSelectNovel(novel.id)}>
-                    编辑
-                  </EditNovelButton>
-                  <DeleteNovelButton onClick={() => confirmDelete(novel.id, novel.title)}>
-                    删除
-                  </DeleteNovelButton>
-                </NovelItemActions>
-              </NovelItem>
+          <SubcategorySection>
+            {subcategories.map(subcategory => (
+              <SubcategoryGroup key={subcategory}>
+                <SubcategoryTitle>{subcategory}</SubcategoryTitle>
+                <NovelList>
+                  {novelsBySubcategory[subcategory].map(novel => (
+                    <NovelItem key={novel.id}>
+                      <NovelInfo>
+                        <NovelTitle
+                          onClick={() => onSelectNovel(novel.id)}
+                          tabIndex={0}
+                          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onSelectNovel(novel.id)}
+                        >
+                          {novel.title}
+                        </NovelTitle>
+                        {(novel.category || novel.subcategory) && (
+                          <NovelCategoryInfo>
+                            {novel.category && <CategoryTag>{novel.category}</CategoryTag>}
+                            {novel.subcategory && <SubcategoryTag>{novel.subcategory}</SubcategoryTag>}
+                          </NovelCategoryInfo>
+                        )}
+                      </NovelInfo>
+                      <NovelItemActions>
+                        <CategoryButton onClick={() => setCategoryModalNovel(novel)}>
+                          分类
+                        </CategoryButton>
+                        <EditNovelButton onClick={() => onSelectNovel(novel.id)}>
+                          编辑
+                        </EditNovelButton>
+                        <DeleteNovelButton onClick={() => confirmDelete(novel.id, novel.title)}>
+                          删除
+                        </DeleteNovelButton>
+                      </NovelItemActions>
+                    </NovelItem>
+                  ))}
+                </NovelList>
+              </SubcategoryGroup>
             ))}
-          </NovelList>
+          </SubcategorySection>
         )}
       </Section>
       <TagTemplateModal
@@ -436,6 +655,14 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
         onClose={() => setIsTemplateModalOpen(false)}
         templates={tagTemplates}
         onUpdateTemplates={onUpdateTemplates}
+      />
+      <CategoryModal
+        isOpen={!!categoryModalNovel}
+        novelTitle={categoryModalNovel?.title || ''}
+        currentCategory={categoryModalNovel?.category || null}
+        currentSubcategory={categoryModalNovel?.subcategory || null}
+        onClose={() => setCategoryModalNovel(null)}
+        onSave={handleCategoryModalSave}
       />
     </ProjectsPage>
   );

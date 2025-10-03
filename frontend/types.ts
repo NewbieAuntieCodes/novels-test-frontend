@@ -55,6 +55,8 @@ export interface Novel {
   userId: string; // Associated user
   storylines?: Storyline[];
   plotAnchors?: PlotAnchor[];
+  category?: string | null; // 大分类：男频小说、女频小说、电影剧本、电视剧剧本
+  subcategory?: string | null; // 子分类：用户自定义
 }
 
 export interface SelectionDetails {

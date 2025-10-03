@@ -120,24 +120,6 @@ const App: React.FC = () => {
       const globalTagsData = await tagsApi.getAll(); // 后端会返回所有标签
       const globalTags = globalTagsData.filter(t => t.novelId === null);
       setAllUserTags(globalTags);
-
-      // 🆕 确保全局"待标注"标签存在
-      const hasPendingTag = globalTags.some(
-        t => t.name === PENDING_ANNOTATION_TAG_NAME
-      );
-      if (!hasPendingTag) {
-        try {
-          const newPendingTag = await tagsApi.create({
-            name: PENDING_ANNOTATION_TAG_NAME,
-            color: PENDING_ANNOTATION_TAG_COLOR,
-            parentId: null,
-            novelId: null, // 全局标签
-          });
-          setAllUserTags(prev => [...prev, newPendingTag]);
-        } catch (error) {
-          console.error('创建待标注标签失败:', error);
-        }
-      }
       setAllUserAnnotations([]); // 初始为空，编辑器内加载
 
       navigateTo('#/projects');
@@ -271,6 +253,29 @@ const App: React.FC = () => {
     }
   };
 
+  const handleUpdateNovelCategory = async (novelId: string, category: string, subcategory: string) => {
+    if (!currentUser) return;
+
+    // 先更新本地状态，提供即时反馈
+    setNovels(prevNovels =>
+      prevNovels.map(novel =>
+        novel.id === novelId
+          ? { ...novel, category, subcategory }
+          : novel
+      )
+    );
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novelId, { category, subcategory });
+    } catch (error) {
+      alert(`更新分类失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      // 如果失败，重新加载小说列表
+      const novelsData = await novelsApi.getAll();
+      setNovels(novelsData);
+    }
+  };
+
   const handleUpdateTagName = async (tagId: string, newName: string) => {
     if (!currentUser) return;
 
@@ -327,6 +332,7 @@ const App: React.FC = () => {
             onUploadNovel={handleUploadNovel}
             onSelectNovel={(novelId) => navigateTo(`#/edit/${novelId}`)}
             onDeleteNovel={handleDeleteNovel}
+            onUpdateNovelCategory={handleUpdateNovelCategory}
             onLogout={handleLogout}
             currentUser={currentUser}
             onNavigateToTagSearch={() => navigateTo('#/tag-search')}

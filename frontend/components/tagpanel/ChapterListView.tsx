@@ -7,6 +7,8 @@ interface ChapterListViewProps {
   chapters: Chapter[];
   selectedChapterId: string | null;
   onSelectChapter: (id: string | null) => void;
+  onDeleteChapter: (chapterId: string) => void;
+  onRenameChapter: (chapterId: string, newTitle: string) => void;
 }
 
 const CHAPTERS_PER_PAGE = 100;
@@ -63,14 +65,11 @@ const ListItem = styled.li<{ isActive: boolean }>`
   padding: ${SPACING.sm};
   margin-bottom: ${SPACING.xs};
   border-radius: ${FONTS.sizeSmall};
-  cursor: pointer;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: ${SPACING.sm};
   transition: background-color 0.1s, border-color 0.1s, color 0.1s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   border: 1px solid ${props => (props.isActive ? COLORS.primary : COLORS.borderLight)};
   background-color: ${props => (props.isActive ? COLORS.highlightBackground : 'transparent')};
   color: ${props => (props.isActive ? COLORS.primary : COLORS.text)};
@@ -82,12 +81,46 @@ const ListItem = styled.li<{ isActive: boolean }>`
   }
 `;
 
+const ChapterTitle = styled.span`
+  cursor: pointer;
+  flex-grow: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const ChapterActions = styled.div`
+  display: flex;
+  gap: ${SPACING.xs};
+  align-items: center;
+  flex-shrink: 0;
+`;
+
+const ActionButton = styled.button<{ variant?: 'edit' | 'delete' }>`
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: ${SPACING.xs};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: ${props => props.variant === 'delete' ? COLORS.danger : COLORS.primary};
+  transition: opacity 0.2s;
+  font-size: ${FONTS.sizeLarge};
+
+  &:hover {
+    opacity: 0.7;
+  }
+`;
+
 const Placeholder = styled.p(globalPlaceholderTextStyles);
 
 const ChapterListView: React.FC<ChapterListViewProps> = ({
-  chapters, selectedChapterId, onSelectChapter
+  chapters, selectedChapterId, onSelectChapter, onDeleteChapter, onRenameChapter
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
 
   // 排序后的章节列表
   const sortedChapters = useMemo(() => {
@@ -125,21 +158,112 @@ const ChapterListView: React.FC<ChapterListViewProps> = ({
     setCurrentPage(prev => Math.min(totalPages, prev + 1));
   };
 
+  const handleStartEdit = (chapter: Chapter) => {
+    setEditingChapterId(chapter.id);
+    setEditingTitle(chapter.title);
+  };
+
+  const handleSaveEdit = () => {
+    if (editingChapterId && editingTitle.trim()) {
+      onRenameChapter(editingChapterId, editingTitle.trim());
+      setEditingChapterId(null);
+      setEditingTitle('');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingChapterId(null);
+    setEditingTitle('');
+  };
+
+  const handleDelete = (chapter: Chapter) => {
+    if (window.confirm(`确定要删除章节"${chapter.title}"吗？`)) {
+      onDeleteChapter(chapter.id);
+    }
+  };
+
   const renderChapters = (): React.ReactElement[] => {
     return currentChapters.map(chapter => {
       const isActive = selectedChapterId === chapter.id;
+      const isEditing = editingChapterId === chapter.id;
+
       return (
         <ListItem
           key={chapter.id}
           isActive={isActive}
-          onClick={() => onSelectChapter(isActive ? null : chapter.id)}
-          role="option"
-          aria-selected={isActive}
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectChapter(isActive ? null : chapter.id); }}
-          title={chapter.title}
         >
-          {chapter.title}
+          {isEditing ? (
+            <>
+              <input
+                type="text"
+                value={editingTitle}
+                onChange={(e) => setEditingTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveEdit();
+                  if (e.key === 'Escape') handleCancelEdit();
+                }}
+                autoFocus
+                style={{
+                  flexGrow: 1,
+                  padding: '4px 8px',
+                  border: `1px solid ${COLORS.primary}`,
+                  borderRadius: '4px',
+                  fontSize: FONTS.sizeBase,
+                }}
+              />
+              <ChapterActions>
+                <ActionButton
+                  variant="edit"
+                  onClick={handleSaveEdit}
+                  title="保存"
+                >
+                  ✓
+                </ActionButton>
+                <ActionButton
+                  variant="delete"
+                  onClick={handleCancelEdit}
+                  title="取消"
+                >
+                  ✕
+                </ActionButton>
+              </ChapterActions>
+            </>
+          ) : (
+            <>
+              <ChapterTitle
+                onClick={() => onSelectChapter(isActive ? null : chapter.id)}
+                role="option"
+                aria-selected={isActive}
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectChapter(isActive ? null : chapter.id); }}
+                title={chapter.title}
+              >
+                {chapter.title}
+              </ChapterTitle>
+              <ChapterActions>
+                <ActionButton
+                  variant="edit"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleStartEdit(chapter);
+                  }}
+                  title="重命名章节"
+                >
+                  ✏️
+                </ActionButton>
+                <ActionButton
+                  variant="delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(chapter);
+                  }}
+                  title="删除章节"
+                >
+                  ✕
+                </ActionButton>
+              </ChapterActions>
+            </>
+          )}
         </ListItem>
       );
     });

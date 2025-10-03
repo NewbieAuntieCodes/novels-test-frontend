@@ -20,6 +20,8 @@ export const getNovels = async (req: Request, res: Response): Promise<void> => {
         userId: true,
         createdAt: true,
         updatedAt: true,
+        category: true,
+        subcategory: true,
         // 不返回 text 字段（全文）
       },
     });
@@ -99,7 +101,7 @@ export const updateNovel = async (req: Request, res: Response): Promise<void> =>
   try {
     const { id } = req.params;
     const userId = req.user!.id;
-    const { title, text, chapters, storylines, plotAnchors }: UpdateNovelRequest = req.body;
+    const { title, text, chapters, storylines, plotAnchors, category, subcategory }: UpdateNovelRequest = req.body;
 
     // 检查小说是否存在且属于当前用户
     const existingNovel = await prisma.novel.findFirst({
@@ -118,6 +120,8 @@ export const updateNovel = async (req: Request, res: Response): Promise<void> =>
     if (chapters !== undefined) updateData.chapters = chapters;
     if (storylines !== undefined) updateData.storylines = storylines;
     if (plotAnchors !== undefined) updateData.plotAnchors = plotAnchors;
+    if (category !== undefined) updateData.category = category;
+    if (subcategory !== undefined) updateData.subcategory = subcategory;
 
     const novel = await prisma.novel.update({
       where: { id },

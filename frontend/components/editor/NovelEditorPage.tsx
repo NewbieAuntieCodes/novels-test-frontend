@@ -414,6 +414,8 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
                 chapters={novel.chapters || []}
                 selectedChapterId={editorState.selectedChapterId}
                 onSelectChapter={editorState.handleSelectChapter}
+                onDeleteChapter={editorState.handleDeleteChapter}
+                onRenameChapter={editorState.handleRenameChapter}
             />
         </ChapterListPanel>
         <Resizer
