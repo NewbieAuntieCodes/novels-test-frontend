@@ -220,3 +220,67 @@ export const getChapterContent = async (req: Request, res: Response): Promise<vo
     res.status(500).json({ error: '获取章节内容失败' });
   }
 };
+
+// 追加内容到现有小说
+export const appendNovelContent = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!.id;
+    const { text, chapters }: { text: string; chapters?: any[] } = req.body;
+
+    if (!text) {
+      res.status(400).json({ error: '追加内容不能为空' });
+      return;
+    }
+
+    // 检查小说是否存在且属于当前用户
+    const existingNovel = await prisma.novel.findFirst({
+      where: { id, userId },
+    });
+
+    if (!existingNovel) {
+      res.status(404).json({ error: '小说不存在' });
+      return;
+    }
+
+    // 标准化换行符
+    const normalizedText = text.replace(/\r\n|\r/g, '\n');
+
+    // 拼接新文本（使用两个换行符分隔，避免章节粘连）
+    const oldTextLength = existingNovel.text.length;
+    const appendedText = existingNovel.text + '\n\n' + normalizedText;
+
+    // 对新增文本进行分章
+    const newChapters = chapters || splitTextIntoChapters(normalizedText);
+
+    // 将新章节的索引整体加上旧文本长度偏移（+2 是因为添加了 \n\n）
+    const offset = oldTextLength + 2;
+    const offsetNewChapters = newChapters.map((chapter: any) => ({
+      ...chapter,
+      originalStartIndex: chapter.originalStartIndex + offset,
+      originalEndIndex: chapter.originalEndIndex + offset,
+    }));
+
+    // 合并章节列表
+    const existingChapters = (existingNovel.chapters as any[]) || [];
+    const finalChapters = [...existingChapters, ...offsetNewChapters];
+
+    // 更新小说（保留所有其他字段）
+    const updatedNovel = await prisma.novel.update({
+      where: { id },
+      data: {
+        text: appendedText,
+        chapters: finalChapters as any,
+        updatedAt: new Date(),
+      },
+    });
+
+    res.json({
+      novel: updatedNovel,
+      appendedChaptersCount: offsetNewChapters.length,
+    });
+  } catch (error) {
+    console.error('追加小说内容错误:', error);
+    res.status(500).json({ error: '追加小说内容失败' });
+  }
+};

@@ -422,66 +422,94 @@ export const useNovelEditorState = ({
   };
 
   const handleUpdateTagParent = async (tagId: string, newParentId: string | null) => {
+    const userTagsBeforeUpdate = allUserTags.filter(t => t.userId === currentUser.id);
+
+    // 获取被移动标签及其所有后代
+    const affectedTagIds = new Set([tagId, ...getAllDescendantTagIds(tagId, userTagsBeforeUpdate)]);
+
     // 先更新本地状态
-    setAllUserTags(prevGlobalTags => {
-      const userTagsBeforeUpdate = prevGlobalTags.filter(
-        t => t.userId === currentUser.id
-      );
+    const updatedGlobalTags = allUserTags.map(tag =>
+      (tag.id === tagId && tag.userId === currentUser.id)
+        ? { ...tag, parentId: newParentId }
+        : tag
+    );
 
-      const updatedGlobalTags = prevGlobalTags.map(tag =>
-        (tag.id === tagId && tag.userId === currentUser.id)
-          ? { ...tag, parentId: newParentId }
-          : tag
-      );
+    const userTagsAfterUpdate = updatedGlobalTags.filter(
+      t => t.userId === currentUser.id
+    );
 
-      const userTagsAfterUpdate = updatedGlobalTags.filter(
-        t => t.userId === currentUser.id
-      );
+    // 收集需要更新到后端的标注
+    const annotationsToUpdate: Array<{ id: string; tagIds: string[] }> = [];
 
-      setAllUserAnnotations(prevGlobalAnnotations => {
-        return prevGlobalAnnotations.map(ann => {
-          if (ann.novelId !== novel.id || ann.userId !== currentUser.id) {
-            return ann;
-          }
+    const updatedAnnotations = allUserAnnotations.map(ann => {
+      if (ann.novelId !== novel.id || ann.userId !== currentUser.id) {
+        return ann;
+      }
 
-          const currentAnnotationLeafTagIds: string[] = ann.tagIds.filter(currentTagIdInAnnotation => {
-            const isOriginalTagValid = userTagsBeforeUpdate.some(t => t.id === currentTagIdInAnnotation);
-            if (!isOriginalTagValid) return false;
+      // 检查此标注是否包含受影响的标签
+      const hasAffectedTag = ann.tagIds.some(tid => affectedTagIds.has(tid));
+      if (!hasAffectedTag) {
+        return ann;
+      }
 
-            const isAncestorToAnotherInAnnotation = ann.tagIds.some(otherTagIdInAnnotation => {
-              if (currentTagIdInAnnotation === otherTagIdInAnnotation) return false;
-              const ancestorsOfOther = getAllAncestorTagIds(otherTagIdInAnnotation, userTagsBeforeUpdate);
-              return ancestorsOfOther.includes(currentTagIdInAnnotation);
-            });
-            return !isAncestorToAnotherInAnnotation;
-          });
+      // 提取叶子标签（在旧的标签树中）
+      const currentAnnotationLeafTagIds: string[] = ann.tagIds.filter(currentTagIdInAnnotation => {
+        const isOriginalTagValid = userTagsBeforeUpdate.some(t => t.id === currentTagIdInAnnotation);
+        if (!isOriginalTagValid) return false;
 
-          let newCombinedTagIdsForAnnotation = new Set<string>();
-          currentAnnotationLeafTagIds.forEach(leafTagId => {
-            const leafTagExistsInNew = userTagsAfterUpdate.find(t => t.id === leafTagId);
-            if (leafTagExistsInNew) {
-                newCombinedTagIdsForAnnotation.add(leafTagId);
-                const newAncestors = getAllAncestorTagIds(leafTagId, userTagsAfterUpdate);
-                newAncestors.forEach(ancestorId => newCombinedTagIdsForAnnotation.add(ancestorId));
-            }
-          });
-
-          const finalTagIds = Array.from(newCombinedTagIdsForAnnotation)
-                                   .filter(tid => userTagsAfterUpdate.some(t => t.id === tid));
-
-          return { ...ann, tagIds: finalTagIds };
+        const isAncestorToAnotherInAnnotation = ann.tagIds.some(otherTagIdInAnnotation => {
+          if (currentTagIdInAnnotation === otherTagIdInAnnotation) return false;
+          const ancestorsOfOther = getAllAncestorTagIds(otherTagIdInAnnotation, userTagsBeforeUpdate);
+          return ancestorsOfOther.includes(currentTagIdInAnnotation);
         });
+        return !isAncestorToAnotherInAnnotation;
       });
 
-      return updatedGlobalTags;
+      // 使用新的标签树重新计算完整的 tagIds（叶子 + 新祖先）
+      let newCombinedTagIdsForAnnotation = new Set<string>();
+      currentAnnotationLeafTagIds.forEach(leafTagId => {
+        const leafTagExistsInNew = userTagsAfterUpdate.find(t => t.id === leafTagId);
+        if (leafTagExistsInNew) {
+            newCombinedTagIdsForAnnotation.add(leafTagId);
+            const newAncestors = getAllAncestorTagIds(leafTagId, userTagsAfterUpdate);
+            newAncestors.forEach(ancestorId => newCombinedTagIdsForAnnotation.add(ancestorId));
+        }
+      });
+
+      const finalTagIds = Array.from(newCombinedTagIdsForAnnotation)
+                               .filter(tid => userTagsAfterUpdate.some(t => t.id === tid));
+
+      // 只有 tagIds 真正变化时才记录需要更新
+      if (JSON.stringify(ann.tagIds.sort()) !== JSON.stringify(finalTagIds.sort())) {
+        annotationsToUpdate.push({ id: ann.id, tagIds: finalTagIds });
+      }
+
+      return { ...ann, tagIds: finalTagIds };
     });
+
+    // 先更新本地状态，提供即时反馈
+    setAllUserTags(updatedGlobalTags);
+    setAllUserAnnotations(updatedAnnotations);
 
     // 然后保存到后端
     try {
+      // 1. 更新标签的 parentId
       await tagsApi.update(tagId, { parentId: newParentId });
+
+      // 2. 批量更新所有受影响的标注
+      if (annotationsToUpdate.length > 0) {
+        await Promise.all(
+          annotationsToUpdate.map(({ id, tagIds }) =>
+            annotationsApi.update(id, { tagIds })
+          )
+        );
+      }
     } catch (error) {
       console.error('更新标签层级到后端失败:', error);
       alert('更新标签层级失败,请稍后重试');
+      // 失败时回滚本地状态
+      setAllUserTags(allUserTags);
+      setAllUserAnnotations(allUserAnnotations);
     }
   };
 

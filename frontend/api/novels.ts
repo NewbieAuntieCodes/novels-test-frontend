@@ -55,4 +55,12 @@ export const novelsApi = {
       method: 'DELETE',
     });
   },
+
+  // 🆕 追加内容到小说
+  async appendContent(id: string, text: string, chapters?: any[]): Promise<{ novel: Novel; appendedChaptersCount: number }> {
+    return apiRequest<{ novel: Novel; appendedChaptersCount: number }>(`/novels/${id}/append`, {
+      method: 'POST',
+      body: JSON.stringify({ text, chapters }),
+    });
+  },
 };

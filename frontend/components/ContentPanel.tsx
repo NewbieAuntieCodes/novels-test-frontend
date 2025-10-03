@@ -301,7 +301,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
-  const [isComputing, setIsComputing] = useState(false);
 
   const anchorRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -545,9 +544,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   }, [viewMode, editorMode, globalFilterTagName, activeFilterTagDetails, annotations, allNovelTags, tagDepthCache, tagHierarchyCache, novel.title, onDeleteAnnotation]);
 
   const displayedContentOrSnippets = useMemo(() => {
-    // Trigger computing state for heavy calculations
-    setIsComputing(true);
-
     // Return pre-computed storyline content
     if (storylineContent) return storylineContent;
 
@@ -679,16 +675,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     activeFilterTagDetails, allNovelTags, tagDepthCache, tagHierarchyCache, selectedChapter, novel.text
   ]);
 
-  // Reset computing state after render
-  useEffect(() => {
-    if (isComputing) {
-      // Use setTimeout to ensure the loading state is visible
-      const timer = setTimeout(() => {
-        setIsComputing(false);
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-  }, [displayedContentOrSnippets, isComputing]);
 
   const panelTitle = useMemo(() => {
     if (editorMode === 'edit') {
@@ -759,7 +745,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}
           >
-            {isComputing ? <Placeholder>正在加载内容...</Placeholder> : displayedContentOrSnippets}
+            {displayedContentOrSnippets}
           </ContentDisplay>
         </ContentPreviewContainer>
       )}

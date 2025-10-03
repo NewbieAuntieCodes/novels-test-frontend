@@ -13,6 +13,7 @@ interface NovelProjectsPageProps {
   currentUser: User;
   onCreateNovel: (title: string, initialText?: string, templateGenre?: string) => string | undefined;
   onUploadNovel: (title: string, text: string) => string | null | undefined;
+  onAppendNovel: (novelId: string, text: string) => Promise<void>;
   onSelectNovel: (id: string) => void;
   onDeleteNovel: (id: string) => void;
   onUpdateNovelCategory: (novelId: string, category: string, subcategory: string) => void;
@@ -316,6 +317,15 @@ const DeleteNovelButton = styled(BaseButton)`
   }
 `;
 
+const AppendButton = styled(BaseButton)`
+  background-color: ${COLORS.success};
+  padding: ${SPACING.xs} ${SPACING.md};
+
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.successHover};
+  }
+`;
+
 const HiddenFileInput = styled.input`
   display: none;
 `;
@@ -376,7 +386,7 @@ const SubcategoryTitle = styled.h4`
 `;
 
 const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
-  novels, currentUser, onCreateNovel, onUploadNovel, onSelectNovel, onDeleteNovel, onUpdateNovelCategory, onLogout,
+  novels, currentUser, onCreateNovel, onUploadNovel, onAppendNovel, onSelectNovel, onDeleteNovel, onUpdateNovelCategory, onLogout,
   onNavigateToTagSearch, tagTemplates, onUpdateTemplates
 }) => {
   const [newNovelTitle, setNewNovelTitle] = useState('');
@@ -386,6 +396,7 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
   const [categoryModalNovel, setCategoryModalNovel] = useState<Novel | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [appendingNovelId, setAppendingNovelId] = useState<string | null>(null);
 
   const handleCreate = () => {
     if (newNovelTitle.trim()) {
@@ -479,6 +490,40 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
       onUpdateNovelCategory(categoryModalNovel.id, category, subcategory);
       setCategoryModalNovel(null);
     }
+  };
+
+  const handleAppendFile = async (novelId: string) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.txt,text/plain';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file && (file.type === 'text/plain' || file.name.endsWith('.txt'))) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const text = e.target?.result as string;
+          if (text) {
+            try {
+              setAppendingNovelId(novelId);
+              await onAppendNovel(novelId, text);
+            } catch (error) {
+              console.error('追加内容失败:', error);
+              alert('追加内容失败，请重试');
+            } finally {
+              setAppendingNovelId(null);
+            }
+          }
+        };
+        reader.onerror = () => {
+          alert('读取文件时出错');
+          setAppendingNovelId(null);
+        };
+        reader.readAsText(file);
+      } else {
+        alert('请上传 .txt 格式的文本文件');
+      }
+    };
+    input.click();
   };
 
   // 筛选小说
@@ -638,6 +683,12 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
                         <EditNovelButton onClick={() => onSelectNovel(novel.id)}>
                           编辑
                         </EditNovelButton>
+                        <AppendButton
+                          onClick={() => handleAppendFile(novel.id)}
+                          disabled={appendingNovelId === novel.id}
+                        >
+                          {appendingNovelId === novel.id ? '追加中...' : '继续上传'}
+                        </AppendButton>
                         <DeleteNovelButton onClick={() => confirmDelete(novel.id, novel.title)}>
                           删除
                         </DeleteNovelButton>

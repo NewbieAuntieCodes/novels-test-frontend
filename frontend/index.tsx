@@ -238,6 +238,30 @@ const App: React.FC = () => {
       return null;
     }
   };
+
+  const handleAppendNovel = async (novelId: string, text: string): Promise<void> => {
+    if (!currentUser) return;
+
+    try {
+      const normalizedText = text.replace(/\r\n|\r/g, '\n');
+      const result = await novelsApi.appendContent(novelId, normalizedText);
+
+      // 更新小说列表中的数据
+      setNovels(prev =>
+        prev.map(novel =>
+          novel.id === novelId ? result.novel : novel
+        )
+      );
+
+      // 清空该小说的缓存，强制编辑器重新加载
+      novelDataCache.current.delete(novelId);
+
+      alert(`成功追加内容，新增 ${result.appendedChaptersCount} 个章节。`);
+    } catch (error) {
+      alert(`追加内容失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      throw error;
+    }
+  };
   
   const handleDeleteNovel = async (novelId: string) => {
     if (!currentUser) return;
@@ -330,6 +354,7 @@ const App: React.FC = () => {
             novels={novels.filter(n => n.userId === currentUser.id)}
             onCreateNovel={handleCreateNovel}
             onUploadNovel={handleUploadNovel}
+            onAppendNovel={handleAppendNovel}
             onSelectNovel={(novelId) => navigateTo(`#/edit/${novelId}`)}
             onDeleteNovel={handleDeleteNovel}
             onUpdateNovelCategory={handleUpdateNovelCategory}

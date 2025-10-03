@@ -47,9 +47,10 @@ const PageButton = styled.button<{ disabled?: boolean }>`
   border-radius: ${BORDERS.radius};
   cursor: ${props => props.disabled ? 'not-allowed' : 'pointer'};
   transition: background-color 0.2s;
+  pointer-events: ${props => props.disabled ? 'none' : 'auto'};
 
-  &:hover:not(:disabled) {
-    background-color: ${COLORS.primaryHover};
+  &:hover {
+    background-color: ${props => props.disabled ? COLORS.gray200 : COLORS.primaryHover};
   }
 `;
 
@@ -137,18 +138,16 @@ const ChapterListView: React.FC<ChapterListViewProps> = ({
     return sortedChapters.slice(startIndex, endIndex);
   }, [sortedChapters, currentPage]);
 
-  // 当选中的章节不在当前页时，自动跳转到对应页
+  // 当选中的章节变化时，自动跳转到对应页
   React.useEffect(() => {
     if (selectedChapterId) {
       const selectedIndex = sortedChapters.findIndex(ch => ch.id === selectedChapterId);
       if (selectedIndex !== -1) {
         const targetPage = Math.floor(selectedIndex / CHAPTERS_PER_PAGE) + 1;
-        if (targetPage !== currentPage) {
-          setCurrentPage(targetPage);
-        }
+        setCurrentPage(targetPage);
       }
     }
-  }, [selectedChapterId, sortedChapters, currentPage]);
+  }, [selectedChapterId, sortedChapters]);
 
   const handlePrevPage = () => {
     setCurrentPage(prev => Math.max(1, prev - 1));
