@@ -227,10 +227,32 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
         const globalTags = allTags.filter(t => t.novelId === null); // 筛选全局标签
         console.log('[NovelEditor] 筛选全局标签完成，耗时:', (performance.now() - t2_2).toFixed(2), 'ms', '数量:', globalTags.length);
 
+        // 🆕 确保当前小说有「待标注」标签
+        const PENDING_TAG_NAME = '待标注';
+        const PENDING_TAG_COLOR = '#cccccc';
+        let finalNovelTags = [...novelTags];
+
+        const hasPendingTag = novelTags.some(t => t.name === PENDING_TAG_NAME);
+        if (!hasPendingTag) {
+          console.log('[NovelEditor] 为小说创建「待标注」标签...');
+          try {
+            const newPendingTag = await tagsApi.create({
+              name: PENDING_TAG_NAME,
+              color: PENDING_TAG_COLOR,
+              parentId: null,
+              novelId: novel.id, // 小说级别的标签
+            });
+            finalNovelTags.push(newPendingTag);
+            console.log('[NovelEditor] 「待标注」标签创建成功');
+          } catch (error) {
+            console.error('创建待标注标签失败:', error);
+          }
+        }
+
         // 🔧 只保留当前小说的标签和全局标签，删除其他小说的标签
         const t2_3 = performance.now();
         const allTagsMap = new Map<string, Tag>();
-        [...globalTags, ...novelTags].forEach(tag => {
+        [...globalTags, ...finalNovelTags].forEach(tag => {
           allTagsMap.set(tag.id, tag);
         });
         console.log('[NovelEditor] 构建标签Map完成，耗时:', (performance.now() - t2_3).toFixed(2), 'ms', '总数:', allTagsMap.size);

@@ -214,7 +214,13 @@ const TagList: React.FC<TagListProps> = ({
   const renderTagsRecursive = (parentId: string | null, level: number = 0): React.ReactElement[] => {
     return tags
       .filter(tag => tag.parentId === parentId)
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => {
+        // 🆕 「待标注」标签始终排在最前面
+        const PENDING_TAG_NAME = '待标注';
+        if (a.name === PENDING_TAG_NAME) return -1;
+        if (b.name === PENDING_TAG_NAME) return 1;
+        return a.name.localeCompare(b.name);
+      })
       .map(tag => (
         <React.Fragment key={tag.id}>
           <TagItem
