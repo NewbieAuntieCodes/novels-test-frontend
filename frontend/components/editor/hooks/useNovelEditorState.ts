@@ -3,7 +3,8 @@ import { useState, useEffect, useCallback, useMemo, Dispatch, SetStateAction } f
 import type { Novel, Tag, Annotation, SelectionDetails, Chapter, User, Storyline, PlotAnchor } from '../../../types';
 import { generateId, getAllAncestorTagIds, getAllDescendantTagIds, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME } from '../../../utils';
 import type { EditorMode } from '../NovelEditorPage';
-import { annotationsApi, tagsApi, novelsApi } from '../../../api';
+import { annotationsApi, novelsApi } from '../../../api';
+import { tagCompatApi as tagsApi } from '../../../api/tagCompat';
 
 interface UseNovelEditorStateProps {
   novel: Novel;

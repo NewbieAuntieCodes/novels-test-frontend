@@ -13,19 +13,19 @@ import PlotAnchorPopover from './storyline/PlotAnchorPopover';
 
 interface ContentPanelProps {
   novel: Novel;
-  onNovelTextChange: (text: string) => void; 
+  onNovelTextChange: (text: string) => void;
   onChapterTextChange: (chapterId: string, newContent: string) => void;
   onTextSelection: () => void;
   annotations: Annotation[];
   getTagById: (id: string) => Tag | undefined;
   selectedChapter: Chapter | null;
   style?: CSSProperties;
-  viewMode: 'full' | 'snippet'; 
+  viewMode: 'full' | 'snippet';
   activeFilterTagDetails: Tag | null;
-  globalFilterTagName?: string | null; 
+  globalFilterTagName?: string | null;
   allNovelTags: Tag[];
   editorMode: EditorMode;
-  onDeleteAnnotation?: (annotationId: string) => void; 
+  onDeleteAnnotation?: (annotationId: string) => void;
   currentSelection: SelectionDetails | null;
   // Storyline Props
   onAddPlotAnchor: (description: string, position: number, storylineIds: string[]) => void;
@@ -33,6 +33,8 @@ interface ContentPanelProps {
   onDeletePlotAnchor: (anchorId: string) => void;
   scrollToAnchorId: string | null;
   onScrollToAnchorComplete: () => void;
+  // Chapter navigation
+  onSelectChapter?: (chapterId: string) => void;
 }
 
 const Panel = styled.div({
@@ -290,6 +292,39 @@ const AnchorTooltip = styled.div`
   pointer-events: none; /* Don't interfere with hover */
 `;
 
+const NextChapterButton = styled.button<{ visible: boolean }>`
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background-color: ${COLORS.primary};
+  color: ${COLORS.white};
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: ${SHADOWS.medium};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: ${props => props.visible ? 0.85 : 0};
+  visibility: ${props => props.visible ? 'visible' : 'hidden'};
+  transition: opacity 0.3s ease, visibility 0.3s ease, background-color 0.2s ease, transform 0.2s ease;
+  pointer-events: ${props => props.visible ? 'auto' : 'none'};
+  z-index: 10;
+
+  &:hover {
+    opacity: 1;
+    background-color: ${COLORS.primaryDark};
+    transform: scale(1.05);
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
+`;
+
 
 export const ContentPanel: React.FC<ContentPanelProps> = ({
   novel, onNovelTextChange, onChapterTextChange, onTextSelection, annotations, getTagById, selectedChapter, style,
@@ -297,12 +332,16 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   onDeleteAnnotation,
   currentSelection,
   onAddPlotAnchor, onDeletePlotAnchor, onUpdatePlotAnchor,
-  scrollToAnchorId, onScrollToAnchorComplete
+  scrollToAnchorId, onScrollToAnchorComplete,
+  onSelectChapter
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
+  const [isNearBottom, setIsNearBottom] = useState(false);
+  const [shouldScrollToTop, setShouldScrollToTop] = useState(false);
 
   const anchorRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const contentDisplayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollToAnchorId) {
@@ -321,12 +360,41 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
   }, [scrollToAnchorId, onScrollToAnchorComplete]);
 
+  // 计算章节排序和下一章
+  const sortedChapters = useMemo(() => {
+    return [...(novel.chapters || [])].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+  }, [novel.chapters]);
+
+  const nextChapter = useMemo(() => {
+    if (!selectedChapter || !sortedChapters.length) return null;
+    const currentIndex = sortedChapters.findIndex(ch => ch.id === selectedChapter.id);
+    if (currentIndex === -1 || currentIndex === sortedChapters.length - 1) return null;
+    return sortedChapters[currentIndex + 1];
+  }, [selectedChapter, sortedChapters]);
+
   useEffect(() => {
     // This effect syncs the local state with the prop from above.
     // It runs when the user selects a new chapter or when the underlying novel text is updated from the parent.
     const sourceText = selectedChapter ? selectedChapter.content : novel.text;
     setEditedText(sourceText);
   }, [selectedChapter, novel.text]);
+
+  // 处理滚动到顶部逻辑
+  useEffect(() => {
+    if (shouldScrollToTop && contentDisplayRef.current) {
+      contentDisplayRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+      setShouldScrollToTop(false);
+    }
+  }, [shouldScrollToTop, selectedChapter?.id]);
+
+  // 监听滚动事件，判断是否接近底部
+  const handleScroll = () => {
+    if (!contentDisplayRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = contentDisplayRef.current;
+    const threshold = 80; // 距离底部80px以内
+    const nearBottom = scrollHeight - scrollTop - clientHeight <= threshold;
+    setIsNearBottom(nearBottom);
+  };
 
   const handleTextareaBlur = () => {
     // This function is called when the user clicks away from the textarea.
@@ -720,6 +788,13 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     }
   };
 
+  const handleNextChapter = () => {
+    if (nextChapter && onSelectChapter) {
+      onSelectChapter(nextChapter.id);
+      setShouldScrollToTop(true);
+    }
+  };
+
 
   return (
     <Panel style={style}>
@@ -739,14 +814,26 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       {(editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && (
         <ContentPreviewContainer>
           <ContentDisplay
+            ref={contentDisplayRef}
             id="content-display-area"
             onMouseUp={editorMode === 'annotation' ? onTextSelection : undefined}
+            onScroll={handleScroll}
             role="article"
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}
           >
             {displayedContentOrSnippets}
           </ContentDisplay>
+          {editorMode === 'annotation' && nextChapter && (
+            <NextChapterButton
+              visible={isNearBottom}
+              onClick={handleNextChapter}
+              title={`下一章: ${nextChapter.title}`}
+              aria-label={`下一章: ${nextChapter.title}`}
+            >
+              →
+            </NextChapterButton>
+          )}
         </ContentPreviewContainer>
       )}
 

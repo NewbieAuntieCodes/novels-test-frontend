@@ -11,51 +11,70 @@ datasource db {
 }
 
 model User {
-  id          String       @id @default(uuid())
-  username    String       @unique
-  password    String       // bcrypt 加密后的密码
-  createdAt   DateTime     @default(now())
-  novels      Novel[]
-  tags        Tag[]
-  annotations Annotation[]
+  id           String         @id @default(uuid())
+  username     String         @unique
+  password     String         // bcrypt 加密后的密码
+  createdAt    DateTime       @default(now())
+  novels       Novel[]
+  tags         Tag[]
+  placements   TagPlacement[]
+  annotations  Annotation[]
 }
 
 model Novel {
-  id          String       @id @default(uuid())
+  id          String         @id @default(uuid())
   title       String
   text        String
-  chapters    Json?        // Chapter[] 存储为 JSON
-  storylines  Json?        // Storyline[] 存储为 JSON
-  plotAnchors Json?        // PlotAnchor[] 存储为 JSON
-  category    String?      // 大分类：男频小说、女频小说、电影剧本、电视剧剧本
-  subcategory String?      // 子分类：用户自定义
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  chapters    Json?          // Chapter[] 存储为 JSON
+  storylines  Json?          // Storyline[] 存储为 JSON
+  plotAnchors Json?          // PlotAnchor[] 存储为 JSON
+  category    String?        // 大分类：男频小说、女频小说、电影剧本、电视剧剧本
+  subcategory String?        // 子分类：用户自定义
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
   userId      String
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tags        Tag[]        // 🆕 小说的标签
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placements  TagPlacement[] // 挂载在此小说的标签
   annotations Annotation[]
 
   @@index([userId])
 }
 
+// 标签定义：只存储标签的名称和颜色，全局唯一
 model Tag {
-  id          String          @id @default(uuid())
-  name        String
-  color       String
-  parentId    String?
-  userId      String
-  novelId     String?         // 🆕 标签属于特定小说（null表示全局标签，如"待标注"）
-  createdAt   DateTime        @default(now())
-  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  novel       Novel?          @relation(fields: [novelId], references: [id], onDelete: Cascade)
-  parent      Tag?            @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
-  children    Tag[]           @relation("TagHierarchy")
-  annotations AnnotationTag[]
+  id         String         @id @default(uuid())
+  name       String
+  color      String
+  userId     String
+  createdAt  DateTime       @default(now())
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placements TagPlacement[] // 该标签在各处的挂载位置
 
-  @@unique([userId, novelId, name]) // 同一用户的同一小说中，标签名不能重复
+  @@unique([userId, name]) // 同一用户的标签名全局唯一
+  @@index([userId])
+}
+
+// 标签挂载：描述某个标签在特定位置（世界观树、角色树等）的挂载关系
+model TagPlacement {
+  id                String          @id @default(uuid())
+  tagId             String
+  parentPlacementId String?
+  novelId           String?         // 挂载到哪个小说（null表示全局位置）
+  userId            String
+  displayOrder      Int             @default(0) // 在同级中的显示顺序
+  createdAt         DateTime        @default(now())
+
+  tag               Tag             @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  novel             Novel?          @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  parentPlacement   TagPlacement?   @relation("PlacementHierarchy", fields: [parentPlacementId], references: [id], onDelete: Cascade)
+  childPlacements   TagPlacement[]  @relation("PlacementHierarchy")
+  annotations       AnnotationTag[] // 使用此挂载的标注
+
+  @@unique([userId, novelId, tagId, parentPlacementId]) // 同一位置不能重复挂载相同标签
   @@index([userId])
   @@index([novelId])
+  @@index([tagId])
 }
 
 model Annotation {
@@ -76,10 +95,12 @@ model Annotation {
 }
 
 model AnnotationTag {
-  annotationId String
-  tagId        String
-  annotation   Annotation @relation(fields: [annotationId], references: [id], onDelete: Cascade)
-  tag          Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  annotationId  String
+  placementId   String
+  annotation    Annotation    @relation(fields: [annotationId], references: [id], onDelete: Cascade)
+  tagPlacement  TagPlacement  @relation(fields: [placementId], references: [id], onDelete: Cascade)
 
-  @@id([annotationId, tagId])
+  @@id([annotationId, placementId])
+  @@index([placementId])
+  @@index([annotationId])
 }

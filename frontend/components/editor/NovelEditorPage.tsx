@@ -11,7 +11,8 @@ import { usePanelResizer, MIN_PANEL_PERCENTAGE } from './hooks/usePanelResizer';
 import { useNovelEditorState } from './hooks/useNovelEditorState';
 import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
-import { novelsApi, annotationsApi, tagsApi } from '../../api';
+import { novelsApi, annotationsApi } from '../../api';
+import { tagCompatApi as tagsApi } from '../../api/tagCompat';
 
 
 interface NovelEditorPageProps {
@@ -477,8 +478,8 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           getTagById={editorState.getTagById}
           selectedChapter={editorState.currentChapterDetails}
           viewMode={contentPanelViewMode}
-          activeFilterTagDetails={editorState.activeTagDetails} 
-          globalFilterTagName={editorState.globalFilterTagName} 
+          activeFilterTagDetails={editorState.activeTagDetails}
+          globalFilterTagName={editorState.globalFilterTagName}
           allNovelTags={editorState.currentUserTags}
           editorMode={editorMode}
           onDeleteAnnotation={editorState.handleDeleteAnnotation}
@@ -489,6 +490,8 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           onUpdatePlotAnchor={editorState.handleUpdatePlotAnchor}
           scrollToAnchorId={editorState.scrollToAnchorId}
           onScrollToAnchorComplete={() => editorState.setScrollToAnchorId(null)}
+          // Chapter navigation
+          onSelectChapter={editorState.handleSelectChapter}
         />
         <Resizer
           isHovered={hoveredResizer === 2}

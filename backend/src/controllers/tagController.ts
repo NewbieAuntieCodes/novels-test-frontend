@@ -2,23 +2,15 @@ import { Request, Response } from 'express';
 import prisma from '../utils/prisma';
 import { CreateTagRequest, UpdateTagRequest } from '../types';
 
-// 获取所有标签（可按小说ID筛选）
+// 获取所有标签定义（全局唯一，不区分小说）
 export const getTags = async (req: Request, res: Response): Promise<void> => {
   try {
     const startTime = Date.now();
     const userId = req.user!.id;
-    const { novelId } = req.query;
 
-    const where: any = { userId };
-
-    // 如果指定了novelId，只返回该小说的标签；否则返回所有标签
-    if (novelId) {
-      where.novelId = novelId as string;
-    }
-
-    console.log(`[getTags] 开始查询 userId=${userId}, novelId=${novelId || 'all'}`);
+    console.log(`[getTags] 开始查询 userId=${userId}`);
     const tags = await prisma.tag.findMany({
-      where,
+      where: { userId },
       orderBy: { createdAt: 'asc' },
     });
     const duration = Date.now() - startTime;
@@ -31,37 +23,20 @@ export const getTags = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-// 创建标签
+// 创建标签定义（全局唯一）
 export const createTag = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { name, color, parentId, novelId }: CreateTagRequest & { novelId?: string } = req.body;
+    const { name, color }: CreateTagRequest = req.body;
 
     if (!name || !color) {
       res.status(400).json({ error: '标签名称和颜色不能为空' });
       return;
     }
 
-    // 🆕 如果指定了novelId，验证小说存在且属于当前用户
-    if (novelId) {
-      const novel = await prisma.novel.findFirst({
-        where: { id: novelId, userId },
-      });
-
-      if (!novel) {
-        res.status(404).json({ error: '小说不存在' });
-        return;
-      }
-    }
-
-    // 检查是否已存在同名标签（同一小说中不能有重复标签名）
-    // 🔧 Prisma 的 findUnique 不支持 null 值在复合键中，所以使用 findFirst
+    // 检查是否已存在同名标签（用户级全局唯一）
     const existingTag = await prisma.tag.findFirst({
-      where: {
-        userId,
-        novelId: novelId || null,
-        name,
-      },
+      where: { userId, name },
     });
 
     if (existingTag) {
@@ -69,26 +44,8 @@ export const createTag = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 如果指定了父标签，验证父标签存在且属于当前用户和同一小说
-    if (parentId) {
-      const parentTag = await prisma.tag.findFirst({
-        where: { id: parentId, userId, novelId: novelId || null },
-      });
-
-      if (!parentTag) {
-        res.status(404).json({ error: '父标签不存在' });
-        return;
-      }
-    }
-
     const tag = await prisma.tag.create({
-      data: {
-        name,
-        color,
-        parentId: parentId || null,
-        userId,
-        novelId: novelId || null, // 🆕 关联小说ID
-      },
+      data: { name, color, userId },
     });
 
     res.status(201).json(tag);
@@ -98,12 +55,12 @@ export const createTag = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-// 更新标签
+// 更新标签定义
 export const updateTag = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const userId = req.user!.id;
-    const { name, color, parentId }: UpdateTagRequest = req.body;
+    const { name, color }: UpdateTagRequest = req.body;
 
     // 检查标签是否存在且属于当前用户
     const existingTag = await prisma.tag.findFirst({
@@ -115,15 +72,10 @@ export const updateTag = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 如果修改名称，检查新名称是否已被使用（同一小说中）
+    // 如果修改名称，检查新名称是否已被使用
     if (name && name !== existingTag.name) {
-      // 🔧 Prisma 的 findUnique 不支持 null 值在复合键中，所以使用 findFirst
       const duplicateTag = await prisma.tag.findFirst({
-        where: {
-          userId,
-          novelId: existingTag.novelId,
-          name,
-        },
+        where: { userId, name },
       });
 
       if (duplicateTag) {
@@ -136,7 +88,6 @@ export const updateTag = async (req: Request, res: Response): Promise<void> => {
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (color !== undefined) updateData.color = color;
-    if (parentId !== undefined) updateData.parentId = parentId;
 
     const tag = await prisma.tag.update({
       where: { id },
@@ -150,7 +101,7 @@ export const updateTag = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-// 删除标签
+// 删除标签定义（会级联删除所有挂载和关联的标注）
 export const deleteTag = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -166,7 +117,7 @@ export const deleteTag = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 删除标签（级联删除子标签和关联的标注）
+    // 删除标签（级联删除所有挂载和关联的标注）
     await prisma.tag.delete({
       where: { id },
     });

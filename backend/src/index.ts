@@ -5,6 +5,7 @@ import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
 import novelRoutes from './routes/novels';
 import tagRoutes from './routes/tags';
+import tagPlacementRoutes from './routes/tagPlacements';
 import annotationRoutes from './routes/annotations';
 
 const app = express();
@@ -25,6 +26,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/novels', novelRoutes);
 app.use('/api/tags', tagRoutes);
+app.use('/api/tag-placements', tagPlacementRoutes);
 app.use('/api/annotations', annotationRoutes);
 
 // 错误处理中间件（必须放在最后）

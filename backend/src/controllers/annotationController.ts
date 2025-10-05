@@ -19,7 +19,11 @@ export const getAnnotations = async (req: Request, res: Response): Promise<void>
       include: {
         tags: {
           include: {
-            tag: true,
+            tagPlacement: {
+              include: {
+                tag: true,
+              },
+            },
           },
         },
         novel: {
@@ -32,10 +36,12 @@ export const getAnnotations = async (req: Request, res: Response): Promise<void>
       orderBy: { createdAt: 'desc' },
     });
 
-    // 如果指定了tagId，筛选包含该标签的标注
+    // 如果指定了tagId，筛选包含该标签的标注（支持按placementId或tagId筛选）
     if (tagId) {
       annotations = annotations.filter((annotation) =>
-        annotation.tags.some((at) => at.tag.id === tagId)
+        annotation.tags.some((at) =>
+          at.placementId === tagId || at.tagPlacement.tagId === tagId
+        )
       );
     }
 
@@ -49,15 +55,25 @@ export const getAnnotations = async (req: Request, res: Response): Promise<void>
       novelId: annotation.novelId,
       userId: annotation.userId,
       createdAt: annotation.createdAt,
-      tagIds: annotation.tags.map((at) => at.tag.id),
-      tags: annotation.tags.map((at) => at.tag),
+      tagIds: annotation.tags.map((at) => at.placementId),
+      tags: annotation.tags.map((at) => ({
+        id: at.placementId,
+        name: at.tagPlacement.tag.name,
+        color: at.tagPlacement.tag.color,
+        userId: at.tagPlacement.userId,
+        novelId: at.tagPlacement.novelId,
+        parentId: at.tagPlacement.parentPlacementId,
+        createdAt: at.tagPlacement.createdAt,
+      })),
       novel: annotation.novel,
     }));
 
     res.json(formattedAnnotations);
-  } catch (error) {
+  } catch (error: any) {
     console.error('获取标注列表错误:', error);
-    res.status(500).json({ error: '获取标注列表失败' });
+    console.error('错误堆栈:', error.stack);
+    console.error('错误消息:', error.message);
+    res.status(500).json({ error: '获取标注列表失败', details: error.message });
   }
 };
 
@@ -94,15 +110,18 @@ export const createAnnotation = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    // 验证所有标签存在且属于当前用户
-    const tags = await prisma.tag.findMany({
+    // 验证所有标签放置点存在且属于当前用户
+    const placements = await prisma.tagPlacement.findMany({
       where: {
         id: { in: tagIds },
         userId,
       },
+      include: {
+        tag: true,
+      },
     });
 
-    if (tags.length !== tagIds.length) {
+    if (placements.length !== tagIds.length) {
       res.status(404).json({ error: '部分标签不存在' });
       return;
     }
@@ -117,15 +136,19 @@ export const createAnnotation = async (req: Request, res: Response): Promise<voi
         novelId,
         userId,
         tags: {
-          create: tagIds.map((tagId) => ({
-            tagId,
+          create: tagIds.map((placementId) => ({
+            placementId,
           })),
         },
       },
       include: {
         tags: {
           include: {
-            tag: true,
+            tagPlacement: {
+              include: {
+                tag: true,
+              },
+            },
           },
         },
       },
@@ -134,8 +157,16 @@ export const createAnnotation = async (req: Request, res: Response): Promise<voi
     // 格式化返回
     const formattedAnnotation = {
       ...annotation,
-      tagIds: annotation.tags.map((at) => at.tag.id),
-      tags: annotation.tags.map((at) => at.tag),
+      tagIds: annotation.tags.map((at) => at.placementId),
+      tags: annotation.tags.map((at) => ({
+        id: at.placementId,
+        name: at.tagPlacement.tag.name,
+        color: at.tagPlacement.tag.color,
+        userId: at.tagPlacement.userId,
+        novelId: at.tagPlacement.novelId,
+        parentId: at.tagPlacement.parentPlacementId,
+        createdAt: at.tagPlacement.createdAt,
+      })),
     };
 
     res.status(201).json(formattedAnnotation);
@@ -178,15 +209,15 @@ export const updateAnnotation = async (req: Request, res: Response): Promise<voi
 
     // 如果需要更新标签
     if (tagIds !== undefined) {
-      // 验证所有标签存在且属于当前用户
-      const tags = await prisma.tag.findMany({
+      // 验证所有标签放置点存在且属于当前用户
+      const placements = await prisma.tagPlacement.findMany({
         where: {
           id: { in: tagIds },
           userId,
         },
       });
 
-      if (tags.length !== tagIds.length) {
+      if (placements.length !== tagIds.length) {
         res.status(404).json({ error: '部分标签不存在' });
         return;
       }
@@ -197,9 +228,9 @@ export const updateAnnotation = async (req: Request, res: Response): Promise<voi
       });
 
       await prisma.annotationTag.createMany({
-        data: tagIds.map((tagId) => ({
+        data: tagIds.map((placementId) => ({
           annotationId: id,
-          tagId,
+          placementId,
         })),
       });
     }
@@ -210,7 +241,11 @@ export const updateAnnotation = async (req: Request, res: Response): Promise<voi
       include: {
         tags: {
           include: {
-            tag: true,
+            tagPlacement: {
+              include: {
+                tag: true,
+              },
+            },
           },
         },
       },
@@ -219,8 +254,16 @@ export const updateAnnotation = async (req: Request, res: Response): Promise<voi
     // 格式化返回
     const formattedAnnotation = {
       ...annotation,
-      tagIds: annotation.tags.map((at) => at.tag.id),
-      tags: annotation.tags.map((at) => at.tag),
+      tagIds: annotation.tags.map((at) => at.placementId),
+      tags: annotation.tags.map((at) => ({
+        id: at.placementId,
+        name: at.tagPlacement.tag.name,
+        color: at.tagPlacement.tag.color,
+        userId: at.tagPlacement.userId,
+        novelId: at.tagPlacement.novelId,
+        parentId: at.tagPlacement.parentPlacementId,
+        createdAt: at.tagPlacement.createdAt,
+      })),
     };
 
     res.json(formattedAnnotation);
@@ -280,7 +323,11 @@ export const searchAnnotations = async (req: Request, res: Response): Promise<vo
       include: {
         tags: {
           include: {
-            tag: true,
+            tagPlacement: {
+              include: {
+                tag: true,
+              },
+            },
           },
         },
         novel: {
@@ -296,8 +343,16 @@ export const searchAnnotations = async (req: Request, res: Response): Promise<vo
     // 格式化返回
     const formattedAnnotations = annotations.map((annotation) => ({
       ...annotation,
-      tagIds: annotation.tags.map((at) => at.tag.id),
-      tags: annotation.tags.map((at) => at.tag),
+      tagIds: annotation.tags.map((at) => at.placementId),
+      tags: annotation.tags.map((at) => ({
+        id: at.placementId,
+        name: at.tagPlacement.tag.name,
+        color: at.tagPlacement.tag.color,
+        userId: at.tagPlacement.userId,
+        novelId: at.tagPlacement.novelId,
+        parentId: at.tagPlacement.parentPlacementId,
+        createdAt: at.tagPlacement.createdAt,
+      })),
     }));
 
     res.json(formattedAnnotations);

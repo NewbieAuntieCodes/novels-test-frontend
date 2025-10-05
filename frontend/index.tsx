@@ -6,7 +6,8 @@ import { generateId, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME, PENDING
 import { FONTS, SPACING, COLORS } from './styles'; // Import shared styles
 import { tagTemplates as initialTagTemplates } from './components/tagpanel/tagTemplates';
 import { bootstrapDemoData } from './data/bootstrap';
-import { authApi, novelsApi, tagsApi, annotationsApi, TokenManager } from './api';
+import { authApi, novelsApi, annotationsApi, TokenManager } from './api';
+import { tagCompatApi as tagsApi } from './api/tagCompat';
 
 
 import LoginPage from './components/auth/LoginPage';
