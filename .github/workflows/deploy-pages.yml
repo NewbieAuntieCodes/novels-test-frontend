@@ -31,8 +31,9 @@ jobs:
         run: node -v && npm -v
 
       - name: Install
-        # Ensure devDependencies (vite/typescript) are available even if NODE_ENV=production is set.
-        run: npm ci --include=dev
+        # package-lock.json is platform-specific in this repo (rollup uses OS-specific optional deps).
+        # Using npm ci on ubuntu can miss the correct rollup binary and fail the build.
+        run: npm install --no-package-lock --no-audit --no-fund
 
       - name: Build
         run: npm run build
