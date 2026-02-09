@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, CSSProperties } from 'react';
+import React, { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
 import styled from '@emotion/styled';
 import type { Novel, User, TagTemplate } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, globalPlaceholderTextStyles } from '../../styles';
@@ -10,6 +10,9 @@ import AuthorNovelsModal from './AuthorNovelsModal';
 import DeleteChaptersModal from './DeleteChaptersModal';
 import { getNovelBackupBadgeLabel, NOVEL_BACKUP_META_CHANGED_EVENT } from '../../utils/novelBackupMeta';
 import { MAIN_CATEGORIES, normalizeMainCategory } from '../../constants/categories';
+
+const normalizeSearchQuery = (value: string) =>
+  value.replace(/\s+/g, ' ').trim().toLowerCase();
 
 interface NovelProjectsPageProps {
   novels: Novel[];
@@ -481,6 +484,60 @@ const CategoryFilterButton = styled.button<{ isActive: boolean }>`
   }
 `;
 
+const NovelSearchContainer = styled.div`
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 260px;
+`;
+
+const NovelSearchInputWrapper = styled.div`
+  position: relative;
+  width: min(520px, 100%);
+`;
+
+const NovelSearchInput = styled.input`
+  padding: ${SPACING.sm} ${SPACING.xl} ${SPACING.sm} ${SPACING.sm};
+  border: ${BORDERS.width} ${BORDERS.style} ${BORDERS.color};
+  border-radius: ${BORDERS.radius};
+  box-sizing: border-box;
+  background-color: ${COLORS.white};
+  font-size: ${FONTS.sizeSmall};
+  width: 100%;
+  height: 38px;
+
+  &:focus {
+    border-color: ${COLORS.primary};
+    box-shadow: 0 0 0 0.2rem ${COLORS.primary}40;
+    outline: none;
+  }
+`;
+
+const NovelSearchClearButton = styled.button`
+  position: absolute;
+  top: 50%;
+  right: ${SPACING.sm};
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: ${COLORS.gray600};
+  cursor: pointer;
+  padding: 0;
+  font-size: ${FONTS.sizeBase};
+  line-height: 1;
+
+  &:hover {
+    color: ${COLORS.gray800};
+  }
+
+  &:focus {
+    outline: none;
+    box-shadow: 0 0 0 0.2rem ${COLORS.primary}40;
+    border-radius: ${BORDERS.radius};
+  }
+`;
+
 const SubcategorySection = styled.div`
   margin-bottom: ${SPACING.lg};
 `;
@@ -509,6 +566,9 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
   const [categoryModalNovel, setCategoryModalNovel] = useState<Novel | null>(null);
   const [editModalNovel, setEditModalNovel] = useState<Novel | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
+  const [novelSearchText, setNovelSearchText] = useState('');
+  const [debouncedNovelSearchQuery, setDebouncedNovelSearchQuery] = useState('');
+  const novelSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [appendingNovelId, setAppendingNovelId] = useState<string | null>(null);
   const [authorModalAuthor, setAuthorModalAuthor] = useState<string | null>(null);
@@ -520,6 +580,14 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     window.addEventListener(NOVEL_BACKUP_META_CHANGED_EVENT, handler as EventListener);
     return () => window.removeEventListener(NOVEL_BACKUP_META_CHANGED_EVENT, handler as EventListener);
   }, []);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedNovelSearchQuery(normalizeSearchQuery(novelSearchText));
+    }, 200);
+
+    return () => window.clearTimeout(handle);
+  }, [novelSearchText]);
 
   useEffect(() => {
     if (projectMode === 'note' && selectedTemplate) {
@@ -684,10 +752,20 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     input.click();
   };
 
-  // 筛选小说
-  const filteredNovels = selectedCategoryFilter
-    ? novels.filter(novel => normalizeMainCategory(novel.category) === selectedCategoryFilter)
-    : novels;
+  // 筛选小说（分类 + 搜索）
+  const filteredNovels = useMemo(() => {
+    const categoryFiltered = selectedCategoryFilter
+      ? novels.filter(novel => normalizeMainCategory(novel.category) === selectedCategoryFilter)
+      : novels;
+
+    if (!debouncedNovelSearchQuery) return categoryFiltered;
+
+    const parts = debouncedNovelSearchQuery.split(' ').filter(Boolean);
+    return categoryFiltered.filter(novel => {
+      const haystack = `${novel.title} ${novel.author ?? ''}`.toLowerCase();
+      return parts.every(part => haystack.includes(part));
+    });
+  }, [selectedCategoryFilter, novels, debouncedNovelSearchQuery]);
 
   const backupBadgeByNovelId = useMemo(() => {
     const map = new Map<string, ReturnType<typeof getNovelBackupBadgeLabel>>();
@@ -868,12 +946,43 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
               {category}
             </CategoryFilterButton>
           ))}
+          <NovelSearchContainer>
+            <NovelSearchInputWrapper>
+              <NovelSearchInput
+                ref={novelSearchInputRef}
+                type="text"
+                value={novelSearchText}
+                onChange={(e) => setNovelSearchText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setNovelSearchText('');
+                    e.preventDefault();
+                  }
+                }}
+                placeholder="搜索小说名 / 作者..."
+                aria-label="搜索小说"
+              />
+              {novelSearchText.trim() !== '' && (
+                <NovelSearchClearButton
+                  type="button"
+                  onClick={() => {
+                    setNovelSearchText('');
+                    novelSearchInputRef.current?.focus();
+                  }}
+                  aria-label="清空搜索"
+                  title="清空搜索"
+                >
+                  x
+                </NovelSearchClearButton>
+              )}
+            </NovelSearchInputWrapper>
+          </NovelSearchContainer>
         </CategoryFilterSection>
 
         {novels.length === 0 ? (
           <Placeholder>您还没有任何小说项目。尝试创建一个或上传一个吧！</Placeholder>
         ) : filteredNovels.length === 0 ? (
-          <Placeholder>没有符合筛选条件的小说。</Placeholder>
+          <Placeholder>没有符合筛选/搜索条件的小说。</Placeholder>
         ) : (
           <SubcategorySection>
             {subcategories.map(subcategory => (
