@@ -9,7 +9,7 @@ import { bootstrapDemoData } from './data/bootstrap';
 import { authApi, novelsApi, annotationsApi, TokenManager } from './api';
 import { tagCompatApi as tagsApi } from './api/tagCompat';
 import { LRUCache } from './utils/LRUCache';
-import { exportNovelData, exportUserData, importUserData } from './storage/localDb';
+import { exportNovelData, exportUserData, importNovelData, importUserData } from './storage/localDb';
 import { markNovelExported } from './utils/novelBackupMeta';
 import { loadTagTemplates, saveTagTemplates } from './utils/tagTemplateStorage';
 
@@ -574,7 +574,23 @@ const App: React.FC = () => {
     try {
       const text = await file.text();
       const payload = JSON.parse(text);
-      await importUserData(currentUser.id, payload);
+
+      const inferredScope: 'user' | 'novel' =
+        payload?.exportScope === 'novel' || (payload?.exportedNovelId && Array.isArray(payload?.novels) && payload.novels.length === 1)
+          ? 'novel'
+          : 'user';
+
+      if (inferredScope === 'novel') {
+        const novelTitle = payload?.novels?.[0]?.title || payload?.exportedNovelId || '（未命名小说）';
+        const ok = window.confirm(`检测到“单本小说导出”：${novelTitle}\n\n将仅导入该小说（不会清空其它小说/数据）。继续？`);
+        if (!ok) return;
+        await importNovelData(currentUser.id, payload);
+      } else {
+        const ok = window.confirm('导入“全量备份”会覆盖当前用户的所有本地数据（不可撤销）。继续？');
+        if (!ok) return;
+        await importUserData(currentUser.id, payload);
+      }
+
       await loadUserData();
       alert('导入成功！');
     } catch (error) {

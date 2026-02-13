@@ -1,4 +1,4 @@
-import { normalizeTagKey } from '../../utils';
+import { generateId, normalizeTagKey } from '../../utils';
 import type { ReferenceLink, TagNote } from '../../types';
 import type { TagPlacement } from '../../api/tagPlacements';
 import { STORES, requestToPromise, withStore } from './core';
@@ -149,6 +149,190 @@ export const exportNovelData = async (userId: string, novelId: string): Promise<
     noteFolders: [],
     notes: [],
   };
+};
+
+export const importNovelData = async (userId: string, payload: BackupPayload): Promise<{ importedNovelId: string }> => {
+  if (payload.exportScope && payload.exportScope !== 'novel') {
+    throw new Error('该文件不是“单本小说导出”，无法用单本导入。');
+  }
+
+  const originalNovelId = payload.exportedNovelId || payload.novels?.[0]?.id;
+  if (!originalNovelId) {
+    throw new Error('备份文件缺少小说ID（exportedNovelId）。');
+  }
+
+  const novelFromPayload = payload.novels?.find((n) => n.id === originalNovelId) || payload.novels?.[0];
+  if (!novelFromPayload) {
+    throw new Error('备份文件中未找到小说数据。');
+  }
+
+  const normalizedUserId = userId;
+
+  // If the same novelId already exists but belongs to another user, avoid overwriting by generating a new id.
+  let importedNovelId = originalNovelId;
+  const existingNovel = await withStore<any | undefined>(STORES.novels, 'readonly', async (store) =>
+    requestToPromise<any | undefined>(store.get(originalNovelId))
+  );
+  if (existingNovel && existingNovel.userId && existingNovel.userId !== normalizedUserId) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const candidate = `import-${generateId()}`;
+      const collision = await withStore<any | undefined>(STORES.novels, 'readonly', async (store) =>
+        requestToPromise<any | undefined>(store.get(candidate))
+      );
+      if (!collision) {
+        importedNovelId = candidate;
+        break;
+      }
+    }
+    if (importedNovelId === originalNovelId) {
+      throw new Error('检测到小说ID冲突，且无法生成新的小说ID，请重试。');
+    }
+  }
+
+  const rewriteUserId = (items: any[]) =>
+    items.map((item) => ({
+      ...item,
+      userId: normalizedUserId,
+    }));
+
+  const rewriteNovelId = <T extends { novelId?: string | null }>(items: T[]): T[] =>
+    items.map((item) => {
+      if (item && item.novelId === originalNovelId) {
+        return { ...item, novelId: importedNovelId };
+      }
+      return item;
+    });
+
+  const novel = {
+    ...novelFromPayload,
+    id: importedNovelId,
+    userId: normalizedUserId,
+  };
+
+  const annotations = rewriteNovelId(rewriteUserId(payload.annotations || [])).filter((ann: any) => ann.novelId === importedNovelId);
+  const tagDefinitions = rewriteUserId(payload.tagDefinitions || []);
+  const tagPlacements = rewriteNovelId(rewriteUserId(payload.tagPlacements || []));
+  const referenceEntries = rewriteNovelId(rewriteUserId(payload.referenceEntries || []));
+
+  const tagNotes: TagNote[] = (payload.tagNotes || []).map((note) => {
+    const rawKey = note.tagKey || normalizeTagKey(note.tagName || '');
+    const id = note.tagId ? `${normalizedUserId}:tag:${note.tagId}` : `${normalizedUserId}:${rawKey}`;
+    return {
+      ...note,
+      id,
+      tagKey: rawKey,
+      userId: normalizedUserId,
+    };
+  });
+
+  const referenceLinks: ReferenceLink[] = (payload.referenceLinks || []).map((link) => {
+    const sourceKey =
+      link.sourceType === 'novel' && link.sourceKey === originalNovelId ? importedNovelId : link.sourceKey;
+    return {
+      ...link,
+      sourceKey,
+      id: `${normalizedUserId}:${link.sourceType}:${sourceKey}:${link.referenceEntryId}`,
+      userId: normalizedUserId,
+    };
+  });
+
+  // Update username if needed
+  const existingUser = await getUserById(userId);
+  if (existingUser) {
+    await saveUser({
+      ...existingUser,
+      username: payload.user?.username || existingUser.username,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  // Remove existing data for this novel only (do NOT wipe everything).
+  await Promise.all([
+    withStore<void>(STORES.novels, 'readwrite', async (store, tx) => {
+      const existing = await requestToPromise<any | undefined>(store.get(importedNovelId));
+      if (existing && existing.userId === normalizedUserId) {
+        store.delete(importedNovelId);
+      }
+      return new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }),
+    withStore<void>(STORES.annotations, 'readwrite', async (store, tx) => {
+      const index = store.index('novelId');
+      const req = index.getAll(importedNovelId);
+      const items = await requestToPromise<any[]>(req);
+      items.filter((item) => item?.userId === normalizedUserId).forEach((item) => store.delete(item.id));
+      return new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }),
+    withStore<void>(STORES.tagPlacements, 'readwrite', async (store, tx) => {
+      const index = store.index('novelId');
+      const req = index.getAll(importedNovelId);
+      const items = await requestToPromise<any[]>(req);
+      items.filter((item) => item?.userId === normalizedUserId).forEach((item) => store.delete(item.id));
+      return new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }),
+    withStore<void>(STORES.referenceEntries, 'readwrite', async (store, tx) => {
+      const index = store.index('novelId');
+      const req = index.getAll(importedNovelId);
+      const items = await requestToPromise<any[]>(req);
+      items.filter((item) => item?.userId === normalizedUserId).forEach((item) => store.delete(item.id));
+      return new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }),
+    withStore<void>(STORES.referenceLinks, 'readwrite', async (store, tx) => {
+      const index = store.index('bySource');
+      const req = index.getAllKeys([normalizedUserId, 'novel', importedNovelId]);
+      const keys = await requestToPromise<IDBValidKey[]>(req);
+      keys.forEach((key) => store.delete(key));
+      return new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }),
+  ]);
+
+  // Upsert imported data.
+  await Promise.all([
+    withStore<void>(STORES.novels, 'readwrite', async (store) => {
+      store.put(novel);
+      return requestToPromise(store.get(novel.id));
+    }),
+    withStore<void>(STORES.annotations, 'readwrite', async (store) => {
+      annotations.forEach((annotation) => store.put(annotation));
+      return requestToPromise(store.get(annotations[0]?.id || ''));
+    }),
+    withStore<void>(STORES.tagDefinitions, 'readwrite', async (store) => {
+      tagDefinitions.forEach((def) => store.put(def));
+      return requestToPromise(store.get(tagDefinitions[0]?.id || ''));
+    }),
+    withStore<void>(STORES.tagPlacements, 'readwrite', async (store) => {
+      tagPlacements.forEach((tp) => store.put(tp));
+      return requestToPromise(store.get(tagPlacements[0]?.id || ''));
+    }),
+    withStore<void>(STORES.referenceEntries, 'readwrite', async (store) => {
+      referenceEntries.forEach((entry) => store.put(entry));
+      return requestToPromise(store.get(referenceEntries[0]?.id || ''));
+    }),
+    withStore<void>(STORES.tagNotes, 'readwrite', async (store) => {
+      tagNotes.forEach((note) => store.put(note));
+      return requestToPromise(store.get(tagNotes[0]?.id || ''));
+    }),
+    withStore<void>(STORES.referenceLinks, 'readwrite', async (store) => {
+      referenceLinks.forEach((link) => store.put(link));
+      return requestToPromise(store.get(referenceLinks[0]?.id || ''));
+    }),
+  ]);
+
+  return { importedNovelId };
 };
 
 export const importUserData = async (userId: string, payload: BackupPayload): Promise<void> => {
@@ -332,4 +516,3 @@ export const importUserData = async (userId: string, payload: BackupPayload): Pr
     }),
   ]);
 };
-
