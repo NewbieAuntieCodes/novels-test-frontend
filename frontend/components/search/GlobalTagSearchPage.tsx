@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import styled from '@emotion/styled';
-import type { Novel, Tag, Annotation, User } from "../types";
+import type { Novel, Tag, Annotation, User, Chapter } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, panelStyles, globalPlaceholderTextStyles } from '../../styles';
-import { getAllDescendantTagIds, getContrastingTextColor, getAllAncestorTagIds } from "../../utils";
+import { getAllDescendantTagIds, getContrastingTextColor, getLeafTagIds, PENDING_ANNOTATION_TAG_NAME } from "../../utils";
 import TagList from '../tagpanel/TagList';
-import { annotationsApi } from '../../api';
+import { annotationsApi, tagsApi } from '../../api';
+import { usePanelResizer, MIN_PANEL_PERCENTAGE } from '../editor/hooks/usePanelResizer';
 
 interface GlobalTagSearchPageProps {
   allUserTags: Tag[];
@@ -70,19 +71,42 @@ const MainContent = styled.main`
   flex-grow: 1;
   overflow: hidden;
   padding: ${SPACING.lg};
-  gap: ${SPACING.lg};
+  width: 100%;
+  min-height: 0;
 `;
 
 const Panel = styled.div(panelStyles);
 
 const LeftPanel = styled(Panel)`
-  flex-basis: 30%;
   min-width: 250px;
 `;
 
 const RightPanel = styled(Panel)`
-  flex-basis: 70%;
   min-width: 300px;
+`;
+
+const Resizer = styled.div<{ isHovered: boolean }>`
+  flex: 0 0 ${SPACING.sm};
+  background-color: ${props => props.isHovered ? COLORS.gray400 : COLORS.gray200};
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  border-left: 1px solid ${COLORS.gray300};
+  border-right: 1px solid ${COLORS.gray300};
+  box-sizing: border-box;
+  transition: background-color 0.2s;
+`;
+
+const ResizerIcon = styled.span`
+  font-size: 10px;
+  line-height: 0.5;
+  color: ${COLORS.gray600};
+  letter-spacing: -1px;
+  user-select: none;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
 `;
 
 const SearchInput = styled.input`
@@ -116,101 +140,184 @@ const ResultsTitle = styled.h2`
   margin-bottom: ${SPACING.md};
 `;
 
-const AnnotationList = styled.ul`
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  flex-grow: 1;
-  overflow-y: auto;
-`;
-
-const DeleteButton = styled.button`
-  background-color: transparent;
-  color: ${COLORS.danger};
-  padding: 0 ${SPACING.xs};
-  font-size: 1.2em;
-  line-height: 1;
-  border-radius: 50%;
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
+const ResultsScrollArea = styled.div`
   display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border: none;
-  cursor: pointer;
-  position: absolute;
-  top: ${SPACING.sm};
-  right: ${SPACING.sm};
-  transition: background-color 0.2s, color 0.2s;
-
-  &:hover {
-    background-color: ${COLORS.danger}20;
-    color: ${COLORS.dangerHover};
-  }
+  flex-direction: column;
+  gap: ${SPACING.md};
+  flex-grow: 1;
+  min-height: 0;
 `;
 
-const AnnotationItem = styled.li`
-  background-color: ${COLORS.white};
-  border: 1px solid ${COLORS.gray300};
-  padding: ${SPACING.md};
-  margin-bottom: ${SPACING.md};
+const NovelGroup = styled.section`
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.sm};
+`;
+
+const NovelGroupHeader = styled.div`
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: ${SPACING.sm} ${SPACING.md};
   border-radius: ${BORDERS.radius};
-  box-shadow: ${SHADOWS.small};
-  position: relative;
+  background-color: ${COLORS.gray100};
+  border: 1px solid ${COLORS.gray300};
 `;
 
-const AnnotationText = styled.p`
-  margin: 0 0 ${SPACING.sm} 0;
-  font-style: italic;
-  color: ${COLORS.text};
-  word-break: break-word;
-  line-height: 1.6;
+const NovelGroupTitle = styled.h3`
+  margin: 0;
+  font-size: ${FONTS.sizeBase};
+  color: ${COLORS.dark};
 `;
 
-const SourceNovelText = styled.p`
+const NovelGroupCount = styled.span`
   font-size: ${FONTS.sizeSmall};
   color: ${COLORS.textLight};
-  margin-bottom: ${SPACING.sm};
 `;
 
-const SourceNovelLink = styled.span`
-  color: ${COLORS.primary};
-  cursor: pointer;
-  text-decoration: underline;
+const ChapterGroup = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.sm};
+  padding-left: ${SPACING.md};
 `;
 
-const TagPillContainer = styled.div`
-  margin-top: ${SPACING.sm};
+const ChapterGroupHeader = styled.div`
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: ${SPACING.xs} ${SPACING.sm};
+  border-radius: 6px;
+  background-color: ${COLORS.gray200};
+  border: 1px solid ${COLORS.gray300};
 `;
 
-const TagGroupRow = styled.div`
-  margin-bottom: ${SPACING.xs};
+const ChapterGroupTitle = styled.h4`
+  margin: 0;
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.dark};
+  font-weight: bold;
+`;
 
-  &:last-of-type {
-    margin-bottom: 0;
+const ChapterGroupCount = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.textLight};
+`;
+
+const SnippetCard = styled.div<{ bgColor: string; textColor: string; isMisaligned?: boolean }>`
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.xs};
+  position: relative;
+  padding: ${SPACING.md};
+  border: 2px solid ${props => (props.isMisaligned ? COLORS.warning : 'rgba(0,0,0,0.1)')};
+  border-radius: ${BORDERS.radius};
+  background-color: ${props => (props.isMisaligned ? `${COLORS.warning}20` : props.bgColor)};
+  box-shadow: ${SHADOWS.small};
+  cursor: default;
+  transition: border-color 0.2s, background-color 0.2s, box-shadow 0.2s;
+
+  &:hover {
+    box-shadow: 0 0 8px ${COLORS.primary}30;
   }
 `;
 
-const TagPill = styled.span<{ bgColor: string; textColor: string; isPrimary: boolean }>`
-  padding: ${SPACING.xs} ${SPACING.sm};
-  border-radius: 3px;
-  font-size: 0.9em;
-  margin: 2px ${SPACING.xs} 2px 0;
-  display: inline-block;
-  white-space: nowrap;
-  border: 1px solid rgba(0,0,0,0.1);
-  cursor: pointer;
-  background-color: ${props => props.bgColor};
+const SnippetContent = styled.div`
+  display: flex;
+  gap: ${SPACING.md};
+  align-items: flex-start;
+  min-width: 0;
+`;
+
+const SnippetBody = styled.div`
+  flex: 1 1 auto;
+  min-width: 0;
+`;
+
+const SnippetSide = styled.div`
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.xs};
+  align-items: flex-end;
+  max-width: 45%;
+`;
+
+const TagPathStack = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: ${SPACING.xs};
+  align-items: flex-end;
+  max-width: 100%;
+`;
+
+const TagPathRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: ${SPACING.xs};
+  justify-content: flex-end;
+  max-width: 100%;
+`;
+
+const SnippetMetaText = styled.span<{ textColor: string }>`
+  font-size: ${FONTS.sizeSmall};
   color: ${props => props.textColor};
-  font-weight: ${props => props.isPrimary ? 'bold' : 'normal'};
-  opacity: ${props => props.isPrimary ? 1 : 0.7};
-  transition: opacity 0.2s, transform 0.2s;
+  opacity: 0.85;
+`;
+
+const TagLevelChip = styled.button<{ $bg: string; $color: string }>`
+  display: inline-flex;
+  align-items: center;
+  padding: 2px ${SPACING.sm};
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.15);
+  background-color: ${props => props.$bg};
+  font-size: ${FONTS.sizeSmall};
+  color: ${props => props.$color};
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: none;
+
+  &:hover {
+    opacity: 0.9;
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${COLORS.primary}80;
+    outline-offset: 2px;
+  }
+`;
+
+const SnippetText = styled.p<{ textColor: string }>`
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  color: ${props => props.textColor};
+`;
+
+const LocateButton = styled.button<{ textColor: string }>`
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: ${FONTS.sizeSmall};
+  color: ${props => props.textColor};
+  cursor: pointer;
+  text-decoration: underline;
+  opacity: 0.9;
 
   &:hover {
     opacity: 1;
-    transform: translateY(-1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${COLORS.primary}80;
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 `;
 
@@ -222,23 +329,67 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
   novels,
   currentUser,
   navigateTo,
-  onDeleteAnnotationGlobally,
   setAllUserAnnotations,
 }) => {
+  const mainContentAreaRef = useRef<HTMLDivElement>(null);
+  const panelWidthsStorageKey = 'globalTagSearchPanelWidths';
+  const initialPanelWidths = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(panelWidthsStorageKey);
+      if (!raw) return [30, 70];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed) || parsed.length !== 2) return [30, 70];
+      const [left, right] = parsed;
+      if (typeof left !== 'number' || typeof right !== 'number') return [30, 70];
+      const total = left + right;
+      if (!Number.isFinite(total) || total <= 0) return [30, 70];
+      const normalizedLeft = (left / total) * 100;
+      const normalizedRight = 100 - normalizedLeft;
+      return [normalizedLeft, normalizedRight];
+    } catch {
+      return [30, 70];
+    }
+  }, []);
+
+  const {
+    panelWidths,
+    handleMouseDownOnResizer,
+    hoveredResizer,
+    setHoveredResizer,
+  } = usePanelResizer({
+    initialWidths: initialPanelWidths,
+    minPercentage: MIN_PANEL_PERCENTAGE,
+    mainContentAreaRef,
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(panelWidthsStorageKey, JSON.stringify(panelWidths));
+    } catch {
+      // ignore
+    }
+  }, [panelWidths]);
+
   const [tagSearchQuery, setTagSearchQuery] = useState('');
-  const [selectedTag, setSelectedTag] = useState<Tag | null>(null);
+  const [selectedMergedTagId, setSelectedMergedTagId] = useState<string | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
   const [isLoadingAnnotations, setIsLoadingAnnotations] = useState(false);
   const [hasLoadedAllAnnotations, setHasLoadedAllAnnotations] = useState(false);
+  const [isLoadingTags, setIsLoadingTags] = useState(false);
+  const [hasLoadedAllTags, setHasLoadedAllTags] = useState(false);
+  const [allTagsForSearch, setAllTagsForSearch] = useState<Tag[]>(() => allUserTags);
 
-  // 🆕 首次打开全局搜索页面时，加载所有标注数据（不加载小说文本）
+  // 首次打开全局搜索页面时，加载所有标注数据（不加载小说文本）
   useEffect(() => {
-    const loadAllAnnotations = async () => {
-      if (hasLoadedAllAnnotations || isLoadingAnnotations) return;
+    if (hasLoadedAllAnnotations) return;
 
+    let cancelled = false;
+
+    const loadAllAnnotations = async () => {
       try {
         setIsLoadingAnnotations(true);
         const allAnnotations = await annotationsApi.getAll(); // 加载所有标注（后端只返回标注数据，不含小说文本）
+        if (cancelled) return;
 
         // 合并到全局状态，保留已有的标注
         setAllUserAnnotations(prev => {
@@ -249,32 +400,213 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
 
         setHasLoadedAllAnnotations(true);
       } catch (error) {
+        if (cancelled) return;
         console.error('加载所有标注失败:', error);
         alert('加载标注数据失败，请刷新重试');
       } finally {
-        setIsLoadingAnnotations(false);
+        if (!cancelled) setIsLoadingAnnotations(false);
       }
     };
 
     loadAllAnnotations();
-  }, [hasLoadedAllAnnotations, isLoadingAnnotations, setAllUserAnnotations]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasLoadedAllAnnotations, setAllUserAnnotations]);
+
+  useEffect(() => {
+    if (hasLoadedAllTags) return;
+
+    let cancelled = false;
+
+    const loadAllTags = async () => {
+      try {
+        setIsLoadingTags(true);
+        const allTags = await tagsApi.getAll();
+        if (cancelled) return;
+        setAllTagsForSearch(allTags);
+        setHasLoadedAllTags(true);
+      } catch (error) {
+        if (cancelled) return;
+        console.error('加载所有标签失败:', error);
+        alert('加载标签数据失败，请刷新重试');
+      } finally {
+        if (!cancelled) setIsLoadingTags(false);
+      }
+    };
+
+    loadAllTags();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasLoadedAllTags]);
+
+  const mergedTagData = useMemo(() => {
+    const tagById = new Map(allTagsForSearch.map(tag => [tag.id, tag]));
+    const pathCache = new Map<string, string[]>();
+
+    const getPathNamesForRealTagId = (tagId: string): string[] => {
+      const cached = pathCache.get(tagId);
+      if (cached) return cached;
+
+      const names: string[] = [];
+      const visited = new Set<string>();
+      let currentId: string | null | undefined = tagId;
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+
+        const tag = tagById.get(currentId);
+        if (!tag) break;
+        names.unshift(tag.name.trim());
+        currentId = tag.parentId;
+      }
+
+      pathCache.set(tagId, names);
+      return names;
+    };
+
+    const PATH_SEPARATOR = '\u001F';
+    const mergedTagsById = new Map<string, Tag>();
+    const mergedIdByRealId = new Map<string, string>();
+    const realTagIdsByMergedId = new Map<string, Set<string>>();
+    const mergedPathLabelById = new Map<string, string>();
+
+    const toMergedId = (pathNames: string[]): string => `merged:${pathNames.join(PATH_SEPARATOR)}`;
+    const toLabel = (pathNames: string[]): string => pathNames.join(' / ');
+
+    const ensureMergedNode = (pathNames: string[], sampleColor: string) => {
+      let parentMergedId: string | null = null;
+      for (let i = 0; i < pathNames.length; i++) {
+        const prefix = pathNames.slice(0, i + 1);
+        const mergedId = toMergedId(prefix);
+        if (!mergedTagsById.has(mergedId)) {
+          mergedTagsById.set(mergedId, {
+            id: mergedId,
+            name: prefix[prefix.length - 1],
+            color: sampleColor,
+            parentId: parentMergedId,
+            novelId: null,
+            userId: currentUser.id,
+          });
+          mergedPathLabelById.set(mergedId, toLabel(prefix));
+        }
+        parentMergedId = mergedId;
+      }
+    };
+
+    for (const realTag of allTagsForSearch) {
+      if (realTag.name.trim() === PENDING_ANNOTATION_TAG_NAME) continue;
+
+      const pathNames = getPathNamesForRealTagId(realTag.id)
+        .map((name) => name.trim())
+        .filter(Boolean);
+      if (pathNames.length === 0) continue;
+      if (pathNames.some((name) => name === PENDING_ANNOTATION_TAG_NAME)) continue;
+
+      ensureMergedNode(pathNames, realTag.color);
+
+      const mergedId = toMergedId(pathNames);
+      mergedIdByRealId.set(realTag.id, mergedId);
+      if (!realTagIdsByMergedId.has(mergedId)) {
+        realTagIdsByMergedId.set(mergedId, new Set<string>());
+      }
+      realTagIdsByMergedId.get(mergedId)!.add(realTag.id);
+    }
+
+    return {
+      mergedTags: Array.from(mergedTagsById.values()),
+      mergedIdByRealId,
+      realTagIdsByMergedId,
+      mergedPathLabelById,
+    };
+  }, [allTagsForSearch, currentUser.id]);
 
   const filteredTags = useMemo(() => {
-    if (!tagSearchQuery.trim()) {
-      return allUserTags;
+    const allMergedTags = mergedTagData.mergedTags;
+    if (!tagSearchQuery.trim()) return allMergedTags;
+
+    const query = tagSearchQuery.toLowerCase();
+    const tagById = new Map(allMergedTags.map(tag => [tag.id, tag]));
+    const childrenByParentId = new Map<string | null, string[]>();
+    for (const tag of allMergedTags) {
+      const key = tag.parentId ?? null;
+      if (!childrenByParentId.has(key)) childrenByParentId.set(key, []);
+      childrenByParentId.get(key)!.push(tag.id);
     }
-    return allUserTags.filter(tag =>
-      tag.name.toLowerCase().includes(tagSearchQuery.toLowerCase())
-    );
-  }, [allUserTags, tagSearchQuery]);
+
+    const matchedIds = allMergedTags
+      .filter(tag => tag.name.toLowerCase().includes(query))
+      .map(tag => tag.id);
+
+    if (matchedIds.length === 0) return [];
+
+    const includedIds = new Set<string>();
+
+    const includeAncestors = (tagId: string) => {
+      let currentId: string | null | undefined = tagId;
+      const visited = new Set<string>();
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+        includedIds.add(currentId);
+        currentId = tagById.get(currentId)?.parentId ?? null;
+      }
+    };
+
+    const includeDescendants = (tagId: string) => {
+      const queue: string[] = [tagId];
+      const visited = new Set<string>([tagId]);
+      let head = 0;
+      while (head < queue.length) {
+        const currentId = queue[head++];
+        const children = childrenByParentId.get(currentId) || [];
+        for (const childId of children) {
+          if (visited.has(childId)) continue;
+          visited.add(childId);
+          includedIds.add(childId);
+          queue.push(childId);
+        }
+      }
+    };
+
+    for (const id of matchedIds) {
+      includeAncestors(id);
+      includeDescendants(id);
+    }
+
+    return allMergedTags.filter(tag => includedIds.has(tag.id));
+  }, [mergedTagData.mergedTags, tagSearchQuery]);
+
+  const selectedTagScope = useMemo(() => {
+    if (!selectedMergedTagId) {
+      return { mergedIds: new Set<string>(), realIds: new Set<string>() };
+    }
+
+    const mergedIds = new Set<string>([
+      selectedMergedTagId,
+      ...getAllDescendantTagIds(selectedMergedTagId, mergedTagData.mergedTags),
+    ]);
+
+    const realIds = new Set<string>();
+    for (const mergedId of mergedIds) {
+      const set = mergedTagData.realTagIdsByMergedId.get(mergedId);
+      if (!set) continue;
+      for (const realTagId of set) realIds.add(realTagId);
+    }
+
+    return { mergedIds, realIds };
+  }, [mergedTagData.mergedTags, mergedTagData.realTagIdsByMergedId, selectedMergedTagId]);
 
   const displayedAnnotations = useMemo(() => {
-    if (!selectedTag) {
+    if (!selectedMergedTagId) {
       return [];
     }
-    const tagAndDescendantIds = new Set([selectedTag.id, ...getAllDescendantTagIds(selectedTag.id, allUserTags)]);
+    if (selectedTagScope.realIds.size === 0) return [];
     return allUserAnnotations
-      .filter(ann => ann.tagIds.some(tid => tagAndDescendantIds.has(tid)))
+      .filter(ann => ann.tagIds.some(tid => selectedTagScope.realIds.has(tid)))
       .sort((a, b) => {
         const novelA = novels.find(n => n.id === a.novelId)?.title || '';
         const novelB = novels.find(n => n.id === b.novelId)?.title || '';
@@ -283,29 +615,371 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
         }
         return a.startIndex - b.startIndex;
       });
-  }, [selectedTag, allUserAnnotations, allUserTags, novels]);
+  }, [allUserAnnotations, novels, selectedMergedTagId, selectedTagScope.realIds]);
+
+  const activeMergedTag = useMemo(
+    () => (selectedMergedTagId ? mergedTagData.mergedTags.find(t => t.id === selectedMergedTagId) : null),
+    [mergedTagData.mergedTags, selectedMergedTagId]
+  );
+
+  const groupedResults = useMemo(() => {
+    type LocateTarget = { novelId: string; chapterId: string; startIndex: number };
+    type TagPathSegment = {
+      mergedTagId: string | null;
+      name: string;
+      color: string;
+    };
+    type TagPath = {
+      id: string;
+      segments: TagPathSegment[];
+    };
+    type SnippetResult = {
+      id: string;
+      novelId: string;
+      chapterId: string;
+      startIndex: number;
+      endIndex: number;
+      text: string;
+      annotationIds: string[];
+      tagPaths: TagPath[];
+      isPotentiallyMisaligned: boolean;
+      locateTarget: LocateTarget;
+    };
+    type ChapterGroupResult = {
+      chapterId: string;
+      chapterNumber: number;
+      chapterTitle: string;
+      snippetCount: number;
+      snippets: SnippetResult[];
+    };
+    type NovelGroupResult = {
+      novelId: string;
+      novelTitle: string;
+      snippetCount: number;
+      chapters: ChapterGroupResult[];
+    };
+
+    if (!selectedMergedTagId) return [] as NovelGroupResult[];
+
+    const novelById = new Map(novels.map(n => [n.id, n]));
+    const tagById = new Map(allTagsForSearch.map(tag => [tag.id, tag]));
+    const mergedTagById = new Map(mergedTagData.mergedTags.map(tag => [tag.id, tag]));
+    const sortedChaptersByNovelId = new Map<string, Chapter[]>();
+
+    const buildTagPathFromLeafId = (leafTagId: string): TagPath | null => {
+      const segments: TagPathSegment[] = [];
+      const visited = new Set<string>();
+      let currentId: string | null | undefined = leafTagId;
+
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+
+        const tag = tagById.get(currentId);
+        if (!tag) break;
+
+        segments.unshift({
+          mergedTagId: mergedTagData.mergedIdByRealId.get(tag.id) ?? null,
+          name: tag.name.trim(),
+          color: tag.color,
+        });
+
+        currentId = tag.parentId;
+      }
+
+      if (segments.length === 0) return null;
+      return { id: leafTagId, segments };
+    };
+
+    const buildTagPathFromMergedId = (mergedId: string): TagPath => {
+      const segments: TagPathSegment[] = [];
+      const visited = new Set<string>();
+      let currentId: string | null | undefined = mergedId;
+
+      while (currentId) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+
+        const tag = mergedTagById.get(currentId);
+        if (!tag) break;
+
+        segments.unshift({
+          mergedTagId: tag.id,
+          name: tag.name.trim(),
+          color: tag.color,
+        });
+
+        currentId = tag.parentId;
+      }
+
+      return { id: mergedId, segments };
+    };
+
+    const getSortedChapters = (novelId: string): Chapter[] => {
+      if (sortedChaptersByNovelId.has(novelId)) return sortedChaptersByNovelId.get(novelId)!;
+      const novel = novelById.get(novelId);
+      const chapters = [...(novel?.chapters || [])].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+      sortedChaptersByNovelId.set(novelId, chapters);
+      return chapters;
+    };
+
+    const getChapterInfoForIndex = (
+      novelId: string,
+      absoluteIndex: number
+    ): { chapterId: string; chapterNumber: number; chapterTitle: string } | null => {
+      const chapters = getSortedChapters(novelId);
+      if (chapters.length === 0) return null;
+
+      let left = 0;
+      let right = chapters.length - 1;
+      while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        const chapter = chapters[mid];
+        if (absoluteIndex < chapter.originalStartIndex) {
+          right = mid - 1;
+        } else if (absoluteIndex >= chapter.originalEndIndex) {
+          left = mid + 1;
+        } else {
+          return {
+            chapterId: chapter.id,
+            chapterNumber: mid + 1,
+            chapterTitle: chapter.title,
+          };
+        }
+      }
+      return null;
+    };
+
+    const groupContiguousAnnotations = (annotations: Annotation[], novelText?: string) => {
+      type Group = {
+        id: string;
+        annotationIds: string[];
+        startIndex: number;
+        endIndex: number;
+        tagIdsSet: Set<string>;
+        fallbackTexts: string[];
+        hasMisaligned: boolean;
+      };
+
+      if (annotations.length === 0) return [] as Array<{
+        id: string;
+        annotationIds: string[];
+        startIndex: number;
+        endIndex: number;
+        tagIds: string[];
+        text: string;
+        hasMisaligned: boolean;
+      }>;
+
+      const text = novelText ?? '';
+      const hasText = text.length > 0;
+      const sorted = [...annotations].sort((a, b) => a.startIndex - b.startIndex);
+
+      const gapIsMergeable = (gap: string): boolean => {
+        const trimmed = gap.trim();
+        if (trimmed === '') return true;
+        return /^[\p{P}\p{S}]+$/u.test(trimmed);
+      };
+
+      const groups: Group[] = [];
+
+      for (const ann of sorted) {
+        const last = groups[groups.length - 1];
+        const annStart = ann.startIndex;
+        const annEnd = ann.endIndex;
+        const annText = ann.text || '';
+        const annMisaligned = Boolean(ann.isPotentiallyMisaligned);
+
+        if (!last) {
+          groups.push({
+            id: ann.id,
+            annotationIds: [ann.id],
+            startIndex: annStart,
+            endIndex: annEnd,
+            tagIdsSet: new Set(ann.tagIds),
+            fallbackTexts: [annText],
+            hasMisaligned: annMisaligned,
+          });
+          continue;
+        }
+
+        const overlaps = annStart <= last.endIndex;
+        const canSliceGap =
+          hasText &&
+          annStart >= last.endIndex &&
+          annStart <= text.length &&
+          last.endIndex <= text.length &&
+          last.endIndex >= 0;
+
+        const gapLen = annStart - last.endIndex;
+        const shouldMerge =
+          overlaps ||
+          (canSliceGap && gapIsMergeable(text.slice(last.endIndex, annStart))) ||
+          (!canSliceGap && gapLen <= 5);
+
+        if (!shouldMerge) {
+          groups.push({
+            id: ann.id,
+            annotationIds: [ann.id],
+            startIndex: annStart,
+            endIndex: annEnd,
+            tagIdsSet: new Set(ann.tagIds),
+            fallbackTexts: [annText],
+            hasMisaligned: annMisaligned,
+          });
+          continue;
+        }
+
+        last.annotationIds.push(ann.id);
+        last.startIndex = Math.min(last.startIndex, annStart);
+        last.endIndex = Math.max(last.endIndex, annEnd);
+        ann.tagIds.forEach(tid => last.tagIdsSet.add(tid));
+        if (annText) last.fallbackTexts.push(annText);
+        if (annMisaligned) last.hasMisaligned = true;
+      }
+
+      return groups.map(g => {
+        const canSliceGroup =
+          hasText &&
+          g.startIndex >= 0 &&
+          g.endIndex >= g.startIndex &&
+          g.endIndex <= text.length;
+
+        const mergedText = canSliceGroup
+          ? text.slice(g.startIndex, g.endIndex)
+          : g.fallbackTexts.filter(Boolean).join('');
+
+        return {
+          id: g.id,
+          annotationIds: g.annotationIds,
+          startIndex: g.startIndex,
+          endIndex: g.endIndex,
+          tagIds: Array.from(g.tagIdsSet),
+          text: mergedText || '[无文本内容]',
+          hasMisaligned: g.hasMisaligned,
+        };
+      });
+    };
+
+    const annotationsByNovel = new Map<string, Annotation[]>();
+    for (const ann of displayedAnnotations) {
+      if (!novelById.has(ann.novelId)) continue;
+      if (!annotationsByNovel.has(ann.novelId)) annotationsByNovel.set(ann.novelId, []);
+      annotationsByNovel.get(ann.novelId)!.push(ann);
+    }
+
+    const novelGroups: NovelGroupResult[] = [];
+
+    for (const [novelId, annsForNovel] of annotationsByNovel.entries()) {
+      const novel = novelById.get(novelId);
+      if (!novel) continue;
+
+      const annotationsByChapter = new Map<string, Annotation[]>();
+      const chapterMetaById = new Map<string, { chapterNumber: number; chapterTitle: string }>();
+
+      for (const ann of annsForNovel) {
+        const chapterInfo = getChapterInfoForIndex(novelId, ann.startIndex);
+        const chapterId = chapterInfo?.chapterId || 'unknown';
+        if (!annotationsByChapter.has(chapterId)) annotationsByChapter.set(chapterId, []);
+        annotationsByChapter.get(chapterId)!.push(ann);
+        if (chapterInfo) {
+          chapterMetaById.set(chapterId, { chapterNumber: chapterInfo.chapterNumber, chapterTitle: chapterInfo.chapterTitle });
+        }
+      }
+
+      const chapterGroups: ChapterGroupResult[] = [];
+
+      for (const [chapterId, annsForChapter] of annotationsByChapter.entries()) {
+        const chapterMeta = chapterMetaById.get(chapterId);
+        const chapterNumber = chapterMeta?.chapterNumber ?? 0;
+        const chapterTitle = chapterMeta?.chapterTitle ?? '未分章节';
+
+        const grouped = groupContiguousAnnotations(annsForChapter, novel.text);
+        const snippets: SnippetResult[] = grouped.map(group => {
+          const relevantTagIds = group.tagIds
+            .map(id => tagById.get(id))
+            .filter((tag): tag is Tag => !!tag && tag.name.trim() !== PENDING_ANNOTATION_TAG_NAME)
+            .filter(tag => selectedTagScope.realIds.has(tag.id))
+            .map(tag => tag.id);
+
+          const leafTagIds = getLeafTagIds(relevantTagIds, allTagsForSearch);
+          const tagPaths = leafTagIds
+            .map(buildTagPathFromLeafId)
+            .filter((path): path is TagPath => !!path && path.segments.length > 0);
+
+          return {
+            id: `${novelId}:${chapterId}:${group.startIndex}:${group.endIndex}`,
+            novelId,
+            chapterId,
+            startIndex: group.startIndex,
+            endIndex: group.endIndex,
+            text: group.text,
+            annotationIds: group.annotationIds,
+            tagPaths: tagPaths.length > 0 ? tagPaths : [buildTagPathFromMergedId(selectedMergedTagId)],
+            isPotentiallyMisaligned: group.hasMisaligned,
+            locateTarget: { novelId, chapterId, startIndex: group.startIndex },
+          };
+        });
+
+        snippets.sort((a, b) => a.startIndex - b.startIndex);
+
+        chapterGroups.push({
+          chapterId,
+          chapterNumber,
+          chapterTitle,
+          snippetCount: snippets.length,
+          snippets,
+        });
+      }
+
+      chapterGroups.sort((a, b) => (a.chapterNumber || 0) - (b.chapterNumber || 0) || a.chapterTitle.localeCompare(b.chapterTitle));
+
+      const snippetCount = chapterGroups.reduce((sum, group) => sum + group.snippetCount, 0);
+      novelGroups.push({
+        novelId,
+        novelTitle: novel.title || '未命名小说',
+        snippetCount,
+        chapters: chapterGroups,
+      });
+    }
+
+    novelGroups.sort((a, b) => a.novelTitle.localeCompare(b.novelTitle));
+    return novelGroups;
+  }, [
+    selectedMergedTagId,
+    displayedAnnotations,
+    novels,
+    allTagsForSearch,
+    mergedTagData.mergedIdByRealId,
+    mergedTagData.mergedTags,
+    selectedTagScope.realIds,
+  ]);
 
   const getNovelTitleById = (novelId: string): string => {
     return novels.find(n => n.id === novelId)?.title || '未知小说';
   };
 
   const getTagById = (tagId: string): Tag | undefined => {
-    return allUserTags.find(t => t.id === tagId);
+    return allTagsForSearch.find(t => t.id === tagId);
   };
 
   const handleTagSelectForSearch = (tagId: string | null) => {
-    if (!tagId) {
-      setSelectedTag(null);
-      return;
-    }
-    const tag = getTagById(tagId);
-    setSelectedTag(tag || null);
+    setSelectedMergedTagId(tagId);
   };
 
-  const confirmDeleteAnnotation = (annotationId: string) => {
-    if (window.confirm("您确定要删除此标注吗？")) {
-      onDeleteAnnotationGlobally(annotationId);
+  const handleOpenLocateInReader = (novelId: string, chapterId: string, absoluteIndex: number) => {
+    try {
+      localStorage.setItem('novelEditorLocateRequest', JSON.stringify({
+        novelId,
+        chapterId,
+        absoluteIndex,
+        createdAt: Date.now(),
+      }));
+    } catch {
+      // ignore
     }
+    setIsNavigating(true);
+    navigateTo(`#/edit/${novelId}`);
   };
 
   const handleNavigateToNovel = (novelId: string) => {
@@ -339,8 +1013,8 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
           返回项目列表
         </BackButton>
       </Header>
-      <MainContent>
-        <LeftPanel>
+      <MainContent ref={mainContentAreaRef}>
+        <LeftPanel style={{ flexBasis: `${panelWidths[0]}%` }}>
           <SearchInput
             type="text"
             placeholder="搜索标签名称..."
@@ -349,16 +1023,19 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
             aria-label="搜索标签"
           />
           <TagListContainer>
-            {filteredTags.length > 0 ? (
+            {isLoadingTags && allTagsForSearch.length === 0 ? (
+              <Placeholder>正在加载标签...</Placeholder>
+            ) : filteredTags.length > 0 ? (
               <TagList
                 tags={filteredTags}
-                activeTagId={selectedTag?.id || null}
+                activeTagId={selectedMergedTagId}
                 editorMode="read"
                 onApplyTagToSelection={() => {}}
                 onSelectTagForReadMode={handleTagSelectForSearch}
                 onUpdateTagParent={() => {}}
                 onUpdateTagColor={() => {}}
                 onUpdateTagName={() => {}}
+                onDeleteTag={() => {}}
                 onTagGlobalSearch={() => {}}
               />
             ) : (
@@ -366,16 +1043,28 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
             )}
           </TagListContainer>
         </LeftPanel>
-        <RightPanel>
+        <Resizer
+          isHovered={hoveredResizer === 0}
+          onMouseDown={(e) => handleMouseDownOnResizer(e, 0)}
+          onMouseEnter={() => setHoveredResizer(0)}
+          onMouseLeave={() => setHoveredResizer(null)}
+          role="separator"
+          aria-label="调整标签树与结果面板宽度"
+        >
+          <ResizerIcon>|||</ResizerIcon>
+        </Resizer>
+        <RightPanel style={{ flexBasis: `${panelWidths[1]}%` }}>
           <ResultsTitle>
-            {selectedTag ? `标签 "${selectedTag.name}" (含子标签) 的标注结果` : '请在左侧选择一个标签以查看标注'}
+            {selectedMergedTagId
+              ? `标签 "${mergedTagData.mergedPathLabelById.get(selectedMergedTagId) || '未知标签'}" (含子标签) 的标注结果`
+              : '请在左侧选择一个标签以查看标注'}
           </ResultsTitle>
-          {displayedAnnotations.length > 0 ? (
+          {/*
             <AnnotationList>
               {displayedAnnotations.map(ann => {
                 const tagsForAnnotation = ann.tagIds
                   .map(tagId => getTagById(tagId))
-                  .filter((tag): tag is Tag => !!tag);
+                  .filter((tag): tag is Tag => !!tag && tag.name.trim() !== PENDING_ANNOTATION_TAG_NAME);
 
                 const getRootId = (tagId: string): string => {
                   let currentTag = allUserTags.find(t => t.id === tagId);
@@ -430,14 +1119,15 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
                         return (
                           <TagGroupRow key={index}>
                             {sortedGroup.map(tag => {
-                              const isPrimaryFilterTag = selectedTag && (tag.id === selectedTag.id || getAllDescendantTagIds(selectedTag.id, allUserTags).includes(tag.id));
+                              const mergedId = mergedTagData.mergedIdByRealId.get(tag.id);
+                              const isPrimaryFilterTag = !!mergedId && selectedTagScope.mergedIds.has(mergedId);
                               return (
                                 <TagPill
                                   key={tag.id}
                                   bgColor={tag.color}
                                   textColor={getContrastingTextColor(tag.color)}
                                   isPrimary={!!isPrimaryFilterTag}
-                                  onClick={() => handleTagSelectForSearch(tag.id)}
+                                  onClick={() => mergedId && handleTagSelectForSearch(mergedId)}
                                   title={`筛选标签: ${tag.name}`}
                                 >
                                   {tag.name}
@@ -458,7 +1148,100 @@ const GlobalTagSearchPage: React.FC<GlobalTagSearchPageProps> = ({
               })}
             </AnnotationList>
           ) : (
-            selectedTag && <Placeholder>此标签下没有找到任何标注。</Placeholder>
+            selectedMergedTagId && <Placeholder>此标签下没有找到任何标注。</Placeholder>
+          */}
+
+          {selectedMergedTagId && groupedResults.length === 0 && (
+            <Placeholder>此标签下没有找到任何标注。</Placeholder>
+          )}
+
+          {selectedMergedTagId && groupedResults.length > 0 && (
+            <ResultsScrollArea>
+              {groupedResults.map(novelGroup => (
+                <NovelGroup key={novelGroup.novelId}>
+                  <NovelGroupHeader>
+                    <NovelGroupTitle>{novelGroup.novelTitle}</NovelGroupTitle>
+                    <NovelGroupCount>{novelGroup.snippetCount} 段</NovelGroupCount>
+                  </NovelGroupHeader>
+
+                  {novelGroup.chapters.map(chapterGroup => (
+                    <ChapterGroup key={`${novelGroup.novelId}:${chapterGroup.chapterId}`}>
+                      <ChapterGroupHeader>
+                        <ChapterGroupTitle>
+                          {chapterGroup.chapterNumber > 0 ? `第${chapterGroup.chapterNumber}章：` : ''}{chapterGroup.chapterTitle}
+                        </ChapterGroupTitle>
+                        <ChapterGroupCount>{chapterGroup.snippetCount} 段</ChapterGroupCount>
+                      </ChapterGroupHeader>
+
+                      {chapterGroup.snippets.map(snippet => {
+                        const bgColor = activeMergedTag?.color || COLORS.white;
+                        const textColor = activeMergedTag ? getContrastingTextColor(activeMergedTag.color) : COLORS.text;
+                        return (
+                          <SnippetCard
+                            key={snippet.id}
+                            bgColor={bgColor}
+                            textColor={textColor}
+                            isMisaligned={snippet.isPotentiallyMisaligned}
+                            title={snippet.isPotentiallyMisaligned ? '此标注可能已错位' : undefined}
+                          >
+                            <SnippetContent>
+                              <SnippetBody>
+                                <SnippetText textColor={textColor}>{snippet.text}</SnippetText>
+                              </SnippetBody>
+                              <SnippetSide>
+                                <TagPathStack>
+                                  {snippet.tagPaths.map((path) => (
+                                    <TagPathRow key={`${snippet.id}:path:${path.id}`}>
+                                      {path.segments.map((segment, idx) => {
+                                        const segmentTextColor = getContrastingTextColor(segment.color);
+                                        return (
+                                          <TagLevelChip
+                                            key={`${path.id}:${idx}:${segment.name}`}
+                                            $bg={segment.color}
+                                            $color={segmentTextColor}
+                                            onDoubleClick={() => {
+                                              if (!segment.mergedTagId) return;
+                                              setSelectedMergedTagId(prev => (prev === segment.mergedTagId ? null : segment.mergedTagId));
+                                            }}
+                                            title={segment.mergedTagId ? `双击：切换到标签 "${segment.name}"` : segment.name}
+                                            aria-label={segment.mergedTagId ? `双击切换到标签 ${segment.name}` : segment.name}
+                                            type="button"
+                                          >
+                                            {segment.name}
+                                          </TagLevelChip>
+                                        );
+                                      })}
+                                    </TagPathRow>
+                                  ))}
+                                </TagPathStack>
+                                <SnippetMetaText textColor={textColor} title="此片段包含的标注数量">
+                                  {snippet.annotationIds.length} 标注
+                                </SnippetMetaText>
+                                <LocateButton
+                                  textColor={textColor}
+                                  onClick={() =>
+                                    handleOpenLocateInReader(
+                                      snippet.locateTarget.novelId,
+                                      snippet.locateTarget.chapterId,
+                                      snippet.locateTarget.startIndex
+                                    )
+                                  }
+                                  aria-label="打开阅读模式并定位到该片段"
+                                  title="打开阅读模式并定位到该片段"
+                                  type="button"
+                                >
+                                  点击定位 →
+                                </LocateButton>
+                              </SnippetSide>
+                            </SnippetContent>
+                          </SnippetCard>
+                        );
+                      })}
+                    </ChapterGroup>
+                  ))}
+                </NovelGroup>
+              ))}
+            </ResultsScrollArea>
           )}
         </RightPanel>
       </MainContent>

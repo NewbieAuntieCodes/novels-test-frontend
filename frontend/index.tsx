@@ -8,6 +8,10 @@ import { tagTemplates as initialTagTemplates } from './components/tagpanel/tagTe
 import { bootstrapDemoData } from './data/bootstrap';
 import { authApi, novelsApi, annotationsApi, TokenManager } from './api';
 import { tagCompatApi as tagsApi } from './api/tagCompat';
+import { LRUCache } from './utils/LRUCache';
+import { exportNovelData, exportUserData, importNovelData, importUserData } from './storage/localDb';
+import { markNovelExported } from './utils/novelBackupMeta';
+import { loadTagTemplates, saveTagTemplates } from './utils/tagTemplateStorage';
 
 
 import LoginPage from './components/auth/LoginPage';
@@ -15,8 +19,11 @@ import RegistrationPage from './components/auth/RegistrationPage';
 import NovelProjectsPage from './components/projects/NovelProjectsPage';
 import NovelEditorPage from './components/editor/NovelEditorPage';
 import GlobalTagSearchPage from './components/search/GlobalTagSearchPage'; // Import new page
+import ToolsPage from './components/tools/ToolsPage';
+import ReferenceLibraryPage from './components/references/ReferenceLibraryPage';
+import NotesLibraryPage from './components/notes/NotesLibraryPage';
 
-type Page = 'login' | 'register' | 'projects' | 'editNovel' | 'tagSearch'; // Added 'tagSearch'
+type Page = 'login' | 'register' | 'projects' | 'editNovel' | 'tagSearch' | 'tools' | 'referenceLibrary' | 'notesLibrary'; // Added 'tagSearch' + 'tools'
 
 const AppContainer = styled.div`
   display: flex;
@@ -45,17 +52,52 @@ const App: React.FC = () => {
   const [novels, setNovels] = useState<Novel[]>([]);
   const [allUserTags, setAllUserTags] = useState<Tag[]>([]);
   const [allUserAnnotations, setAllUserAnnotations] = useState<Annotation[]>([]);
-  const [tagTemplates, setTagTemplates] = useState<TagTemplate[]>(initialTagTemplates);
+  const [tagTemplates, setTagTemplates] = useState<TagTemplate[]>(() => loadTagTemplates(initialTagTemplates));
+  const [isBootstrapping, setIsBootstrapping] = useState<boolean>(true);
 
-  // 🆕 缓存已加载的小说数据，避免重复加载（缓存5分钟）
-  const novelDataCache = useRef<Map<string, {
+  useEffect(() => {
+    saveTagTemplates(tagTemplates);
+  }, [tagTemplates]);
+
+  // 🆕 使用 LRU 缓存管理小说数据（最多缓存 5 本，5分钟TTL）
+  const novelDataCache = useRef<LRUCache<string, {
     tags: Tag[];
+    rangeTags: Tag[];
+    terms: Tag[];
     annotations: Annotation[];
     timestamp: number;
-  }>>(new Map());
+  }>>(new LRUCache(5));
+
+  // ?? 缓存小说全文/章节，避免重复加载大文本（最多缓存 2 本，5分钟TTL）
+  const novelContentCache = useRef<LRUCache<string, {
+    novel: Novel;
+    timestamp: number;
+  }>>(new LRUCache(2));
+
+  // 尝试恢复本地会话
+  useEffect(() => {
+    const restoreSession = async () => {
+      try {
+        const session = await authApi.getUserFromSession();
+        if (session) {
+          const user: User = { id: session.user.id, username: session.user.username };
+          setCurrentUser(user);
+          await loadUserData();
+        }
+      } catch (err) {
+        console.warn('自动登录失败', err);
+      } finally {
+        setIsBootstrapping(false);
+      }
+    };
+
+    restoreSession();
+  }, []);
 
   // --- Routing ---
   useEffect(() => {
+    if (isBootstrapping) return;
+
     const handleHashChange = () => {
       const hash = window.location.hash.replace(/^#\/?/, '');
       if (!currentUser) {
@@ -81,6 +123,15 @@ const App: React.FC = () => {
       } else if (hash === 'tag-search') { // Added route for tag search page
         setCurrentPage('tagSearch');
         setEditingNovelId(null);
+      } else if (hash === 'tools') {
+        setCurrentPage('tools');
+        setEditingNovelId(null);
+      } else if (hash === 'references') {
+        setCurrentPage('referenceLibrary');
+        setEditingNovelId(null);
+      } else if (hash === 'notes') {
+        setCurrentPage('notesLibrary');
+        setEditingNovelId(null);
       } else if (hash === 'projects' || hash === '') {
         setCurrentPage('projects');
         setEditingNovelId(null);
@@ -97,31 +148,61 @@ const App: React.FC = () => {
     handleHashChange();
 
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, [currentUser, novels]);
+  }, [currentUser, novels, isBootstrapping]);
 
   const navigateTo = (path: string) => {
     window.location.hash = path;
   };
 
+  const loadUserData = useCallback(async () => {
+    const [novelsData, globalTagsData, annotationsData] = await Promise.all([
+      novelsApi.getAll(),
+      tagsApi.getAll({ novelId: 'global' }),
+      annotationsApi.getAll(),
+    ]);
+
+    setNovels(novelsData);
+    setAllUserTags(globalTagsData);
+    setAllUserAnnotations(annotationsData);
+  }, []);
+
+  // 🆕 退出编辑器时清理重量级数据
+  const handleNavigateBackFromEditor = useCallback((novelId: string) => {
+    // 1. 清理当前小说的 text 和 chapters，只保留元数据
+    setNovels(prev => prev.map(n => {
+      if (n.id === novelId) {
+        const hasText = n.text && n.text.trim() !== '';
+        const hasChapters = n.chapters && n.chapters.length > 0;
+        if (hasText && hasChapters) {
+          novelContentCache.current.set(novelId, { novel: n, timestamp: Date.now() });
+        }
+        return {
+          ...n,
+          text: '', // 清空正文
+          chapters: (n.chapters || []).map(ch => ({ ...ch, content: '' })), // 清空章节内容（保留章节元信息）
+        };
+      }
+      return n;
+    }));
+
+    // 2. 清理标注状态，只保留全局标签
+    setAllUserTags(prev => prev.filter(t => t.novelId === null));
+    setAllUserAnnotations([]);
+
+    // 3. 返回项目页
+    navigateTo('#/projects');
+  }, []);
+
   // --- Auth Handlers ---
   const handleLogin = async (username: string, password: string) => {
     try {
       const response = await authApi.login(username, password);
-      TokenManager.setToken(response.token);
+      TokenManager.setToken(response.token, response.user.id);
 
       const user: User = { id: response.user.id, username: response.user.username };
       setCurrentUser(user);
 
-      // 从后端加载用户数据（优化：登录时不加载标注和小说标签）
-      const novelsData = await novelsApi.getAll();  // ⚠️ text 字段为空，打开编辑器时再加载
-
-      setNovels(novelsData);
-
-      // 🔧 只加载全局标签（novelId=null），小说标签在编辑器内按需加载
-      const globalTagsData = await tagsApi.getAll(); // 后端会返回所有标签
-      const globalTags = globalTagsData.filter(t => t.novelId === null);
-      setAllUserTags(globalTags);
-      setAllUserAnnotations([]); // 初始为空，编辑器内加载
+      await loadUserData();
 
       navigateTo('#/projects');
     } catch (error) {
@@ -131,9 +212,13 @@ const App: React.FC = () => {
 
   const handleRegister = async (username: string, password: string) => {
     try {
-      await authApi.register(username, password);
-      alert(`用户 "${username}" 注册成功！请登录。`);
-      navigateTo('#/login');
+      const response = await authApi.register(username, password);
+      const user: User = { id: response.user.id, username: response.user.username };
+      setCurrentUser(user);
+      TokenManager.setToken(response.token, response.user.id);
+      await loadUserData();
+      alert(`用户 "${username}" 注册成功并已自动登录！`);
+      navigateTo('#/projects');
     } catch (error) {
       alert(`注册失败: ${error instanceof Error ? error.message : '未知错误'}`);
     }
@@ -147,11 +232,17 @@ const App: React.FC = () => {
     setAllUserTags([]);
     setAllUserAnnotations([]);
     novelDataCache.current.clear(); // 清空缓存
+    novelContentCache.current.clear();
     navigateTo('#/login');
   };
 
   // --- Data Handlers ---
-  const handleCreateNovel = (title: string, initialText: string = '', templateGenre?: string) => {
+  const handleCreateNovel = async (
+    title: string,
+    initialText: string = '',
+    templateGenre?: string,
+    projectMode: 'tag' | 'note' = 'tag'
+  ): Promise<string | undefined> => {
     if (!currentUser) return undefined;
     if (!title.trim()){
       alert("小说标题不能为空。");
@@ -159,7 +250,7 @@ const App: React.FC = () => {
     }
 
     // Handle tag template application
-    if (templateGenre) {
+    if (projectMode === 'tag' && templateGenre) {
       const template = tagTemplates.find(t => t.genre === templateGenre);
       if (template) {
         setAllUserTags(prevTags => {
@@ -199,20 +290,20 @@ const App: React.FC = () => {
 
     const normalizedInitialText = initialText.replace(/\r\n|\r/g, '\n');
     const chapters = splitTextIntoChapters(normalizedInitialText);
-    const newNovel: Novel = {
+    const newNovel = await novelsApi.create({
       id: generateId(),
       title: title.trim(),
       text: normalizedInitialText,
-      userId: currentUser.id,
-      chapters: chapters,
+      chapters,
       storylines: [],
       plotAnchors: [],
-    };
+      projectMode,
+    });
     setNovels(prev => [...prev, newNovel]);
     return newNovel.id;
   };
 
-  const handleUploadNovel = async (title: string, text: string): Promise<string | null> => {
+  const handleUploadNovel = async (title: string, text: string, projectMode: 'tag' | 'note' = 'tag'): Promise<string | null> => {
     if (!currentUser) return null;
     if (!title.trim()) {
       alert("小说标题不能为空。");
@@ -229,6 +320,7 @@ const App: React.FC = () => {
         // chapters 字段不传，让后端自动分章
         storylines: [],
         plotAnchors: [],
+        projectMode,
       });
 
       setNovels(prev => [...prev, newNovel]);
@@ -256,6 +348,7 @@ const App: React.FC = () => {
 
       // 清空该小说的缓存，强制编辑器重新加载
       novelDataCache.current.delete(novelId);
+      novelContentCache.current.delete(novelId);
 
       alert(`成功追加内容，新增 ${result.appendedChaptersCount} 个章节。`);
     } catch (error) {
@@ -263,13 +356,58 @@ const App: React.FC = () => {
       throw error;
     }
   };
-  
+
+  const handleDeleteChaptersAfter = async (novelId: string, keepChapterCount: number): Promise<void> => {
+    if (!currentUser) return;
+
+    try {
+      const result = await novelsApi.deleteChaptersAfter(novelId, keepChapterCount);
+
+      // 更新小说列表中的数据
+      setNovels(prev =>
+        prev.map(novel =>
+          novel.id === novelId ? result.novel : novel
+        )
+      );
+
+      // 更新标注列表（移除已删除的标注）
+      setAllUserAnnotations(prev =>
+        prev.filter(annotation => {
+          if (annotation.novelId !== novelId) return true;
+          // 检查标注是否在保留的文本范围内
+          const novel = result.novel;
+          if (novel.chapters && novel.chapters.length > 0) {
+            const lastChapter = novel.chapters[novel.chapters.length - 1];
+            return annotation.startIndex < lastChapter.originalEndIndex;
+          }
+          return true;
+        })
+      );
+
+      // 清空该小说的缓存，强制编辑器重新加载
+      novelDataCache.current.delete(novelId);
+
+      alert(
+        `删除成功！\n` +
+        `删除章节数：${result.deletedChaptersCount}\n` +
+        `删除标注数：${result.deletedAnnotationsCount}\n` +
+        `截断标注数：${result.truncatedAnnotationsCount}\n` +
+        `删除剧情锚点数：${result.deletedPlotAnchorsCount}`
+      );
+    } catch (error) {
+      alert(`删除章节失败: ${error instanceof Error ? error.message : '未知错误'}`);
+      throw error;
+    }
+  };
+
   const handleDeleteNovel = async (novelId: string) => {
     if (!currentUser) return;
     try {
       await novelsApi.delete(novelId);
       setNovels(prev => prev.filter(n => n.id !== novelId));
       setAllUserAnnotations(prev => prev.filter(a => a.novelId !== novelId));
+      novelDataCache.current.delete(novelId);
+      novelContentCache.current.delete(novelId);
       if (editingNovelId === novelId) {
         navigateTo("#/projects");
       }
@@ -301,6 +439,32 @@ const App: React.FC = () => {
     }
   };
 
+  const handleUpdateNovelInfo = async (novelId: string, title: string, author: string): Promise<void> => {
+    if (!currentUser) {
+      throw new Error('用户未登录');
+    }
+
+    // 先更新本地状态，提供即时反馈
+    setNovels(prevNovels =>
+      prevNovels.map(novel =>
+        novel.id === novelId
+          ? { ...novel, title, author: author || null }
+          : novel
+      )
+    );
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novelId, { title, author: author || null });
+    } catch (error) {
+      // 如果失败，重新加载小说列表恢复到之前的状态
+      const novelsData = await novelsApi.getAll();
+      setNovels(novelsData);
+      // 向上层抛出错误，让弹窗可以显示错误信息
+      throw new Error(`更新小说信息失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
   const handleUpdateTagName = async (tagId: string, newName: string) => {
     if (!currentUser) return;
 
@@ -322,7 +486,7 @@ const App: React.FC = () => {
     }
   };
   
-  const handleUpdateTagColor = (tagId: string, newColor: string) => { 
+  const handleUpdateTagColor = (tagId: string, newColor: string) => {
     setAllUserTags(prevTags =>
       prevTags.map(tag =>
         (tag.id === tagId && tag.userId === currentUser?.id)
@@ -330,14 +494,118 @@ const App: React.FC = () => {
         : tag
       )
     );
+
+    tagsApi.update(tagId, { color: newColor }).catch(err => {
+      console.error('更新标签颜色失败', err);
+    });
+  };
+
+  const handleDeleteTag = async (tagId: string) => {
+    if (!currentUser) return;
+
+    // 先更新本地状态
+    setAllUserTags(prevTags => prevTags.filter(tag => tag.id !== tagId));
+    // 同时删除所有使用该标签的标注
+    setAllUserAnnotations(prev => prev.filter(ann => ann.tagIds && !ann.tagIds.includes(tagId)));
+
+    // 然后保存到后端
+    try {
+      await tagsApi.delete(tagId);
+    } catch (error) {
+      console.error('删除标签到后端失败:', error);
+      alert('删除标签失败,请稍后重试');
+      // 如果失败，重新加载标签和标注
+      const tagsData = await tagsApi.getAll();
+      const globalTags = tagsData.filter(t => t.novelId === null);
+      setAllUserTags(globalTags);
+      const annotationsData = await annotationsApi.getAll();
+      setAllUserAnnotations(annotationsData);
+    }
   };
 
   const handleDeleteAnnotationGlobally = (annotationId: string) => {
+    annotationsApi.delete(annotationId).catch(err => console.error('删除标注失败', err));
     setAllUserAnnotations(prev => prev.filter(ann => ann.id !== annotationId && ann.userId === currentUser?.id));
+  };
+
+  const handleExportData = async () => {
+    if (!currentUser) return;
+    try {
+      const backup = await exportUserData(currentUser.id);
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `novel-backup-${currentUser.username}-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      alert(`导出失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
+  const sanitizeFilenamePart = (value: string): string => {
+    const trimmed = (value || '').trim();
+    const safe = trimmed.replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_').replace(/\s+/g, ' ');
+    return (safe || 'untitled').slice(0, 80);
+  };
+
+  const handleExportNovelData = async (novelId: string) => {
+    if (!currentUser) return;
+    try {
+      const novel = novels.find(n => n.id === novelId && n.userId === currentUser.id);
+      const backup = await exportNovelData(currentUser.id, novelId);
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `novel-backup-${currentUser.username}-${sanitizeFilenamePart(novel?.title || novelId)}-${new Date()
+        .toISOString()
+        .slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      markNovelExported(currentUser.id, novelId, backup.exportedAt);
+    } catch (error) {
+      alert(`导出失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
+  const handleImportData = async (file: File) => {
+    if (!currentUser) return;
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+
+      const inferredScope: 'user' | 'novel' =
+        payload?.exportScope === 'novel' || (payload?.exportedNovelId && Array.isArray(payload?.novels) && payload.novels.length === 1)
+          ? 'novel'
+          : 'user';
+
+      if (inferredScope === 'novel') {
+        const novelTitle = payload?.novels?.[0]?.title || payload?.exportedNovelId || '（未命名小说）';
+        const ok = window.confirm(`检测到“单本小说导出”：${novelTitle}\n\n将仅导入该小说（不会清空其它小说/数据）。继续？`);
+        if (!ok) return;
+        await importNovelData(currentUser.id, payload);
+      } else {
+        const ok = window.confirm('导入“全量备份”会覆盖当前用户的所有本地数据（不可撤销）。继续？');
+        if (!ok) return;
+        await importUserData(currentUser.id, payload);
+      }
+
+      await loadUserData();
+      alert('导入成功！');
+    } catch (error) {
+      console.error('导入失败', error);
+      alert(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
   };
 
 
   const renderPage = () => {
+    if (isBootstrapping) {
+      return <Loading>正在加载本地数据...</Loading>;
+    }
+
     if (!currentUser) {
       switch (currentPage) {
         case 'register':
@@ -350,22 +618,30 @@ const App: React.FC = () => {
 
     switch (currentPage) {
       case 'projects':
-        return (
-          <NovelProjectsPage
-            novels={novels.filter(n => n.userId === currentUser.id)}
-            onCreateNovel={handleCreateNovel}
-            onUploadNovel={handleUploadNovel}
-            onAppendNovel={handleAppendNovel}
-            onSelectNovel={(novelId) => navigateTo(`#/edit/${novelId}`)}
-            onDeleteNovel={handleDeleteNovel}
-            onUpdateNovelCategory={handleUpdateNovelCategory}
-            onLogout={handleLogout}
-            currentUser={currentUser}
-            onNavigateToTagSearch={() => navigateTo('#/tag-search')}
-            tagTemplates={tagTemplates}
-            onUpdateTemplates={setTagTemplates}
-          />
-        );
+          return (
+            <NovelProjectsPage
+              novels={novels.filter(n => n.userId === currentUser.id)}
+              onCreateNovel={handleCreateNovel}
+              onUploadNovel={handleUploadNovel}
+              onAppendNovel={handleAppendNovel}
+              onSelectNovel={(novelId) => navigateTo(`#/edit/${novelId}`)}
+              onDeleteNovel={handleDeleteNovel}
+              onDeleteChaptersAfter={handleDeleteChaptersAfter}
+              onUpdateNovelCategory={handleUpdateNovelCategory}
+              onUpdateNovelInfo={handleUpdateNovelInfo}
+              onExportData={handleExportData}
+              onExportNovelData={handleExportNovelData}
+              onImportData={handleImportData}
+              onLogout={handleLogout}
+              currentUser={currentUser}
+              onNavigateToTagSearch={() => navigateTo('#/tag-search')}
+              onNavigateToTools={() => navigateTo('#/tools')}
+              onNavigateToReferenceLibrary={() => navigateTo('#/references')}
+              onNavigateToNotes={() => navigateTo('#/notes')}
+              tagTemplates={tagTemplates}
+              onUpdateTemplates={setTagTemplates}
+            />
+          );
       case 'editNovel':
         if (editingNovelId) {
           const novelToEdit = novels.find(n => n.id === editingNovelId && n.userId === currentUser.id);
@@ -376,13 +652,17 @@ const App: React.FC = () => {
                 novel={novelToEdit}
                 allUserTags={allUserTags.filter(t => t.userId === currentUser.id)}
                 allUserAnnotations={allUserAnnotations.filter(a => a.userId === currentUser.id)}
+                tagTemplates={tagTemplates}
+                onUpdateTemplates={setTagTemplates}
                 setNovels={setNovels}
                 setAllUserTags={setAllUserTags}
                 setAllUserAnnotations={setAllUserAnnotations}
-                onNavigateBack={() => navigateTo('#/projects')}
+                onNavigateBack={() => handleNavigateBackFromEditor(editingNovelId)}
                 currentUser={currentUser}
                 onUpdateTagName={handleUpdateTagName}
+                onDeleteTag={handleDeleteTag}
                 novelDataCache={novelDataCache}
+                novelContentCache={novelContentCache}
               />
             );
           }
@@ -401,6 +681,12 @@ const App: React.FC = () => {
             setAllUserAnnotations={setAllUserAnnotations}
           />
         );
+      case 'tools':
+        return <ToolsPage onBack={() => navigateTo('#/projects')} />;
+      case 'referenceLibrary':
+        return <ReferenceLibraryPage onBack={() => navigateTo('#/projects')} />;
+      case 'notesLibrary':
+        return <NotesLibraryPage onBack={() => navigateTo('#/projects')} projects={novels.filter(n => n.userId === currentUser.id)} />;
       default:
         navigateTo('#/projects');
         return <Loading>正在加载...</Loading>;

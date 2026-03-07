@@ -8,8 +8,10 @@ interface FilterResultsPanelProps {
   annotations: Annotation[];
   getTagById: (id: string) => Tag | undefined;
   activeFilterTag: Tag | null | undefined;
+  novelText?: string;
   style?: CSSProperties;
   globalFilterTagName?: string | null;
+  includeDescendantTags?: boolean;
   onTagClick?: (tagId: string) => void;
   onTagDoubleClick?: (tagName: string) => void;
   allUserTags: Tag[];
@@ -24,14 +26,22 @@ const Panel = styled.div({
   backgroundColor: COLORS.gray100,
 });
 
+const TitleContainer = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: ${SPACING.lg};
+  flex-shrink: 0;
+`;
+
 const Title = styled.h2`
   font-size: ${FONTS.sizeH3};
   color: ${COLORS.dark};
-  margin-bottom: ${SPACING.lg};
+  margin: 0;
   display: flex;
-  align-items: baseline; 
+  align-items: baseline;
   flex-wrap: wrap;
-  flex-shrink: 0;
+  flex: 1;
 `;
 
 const TitleClarification = styled.span`
@@ -54,6 +64,28 @@ const AnnotationList = styled.ul`
   margin: 0;
   flex-grow: 1; 
   overflow-y: auto; 
+`;
+
+const CopyButton = styled.button`
+  background-color: ${COLORS.primary};
+  color: ${COLORS.white};
+  padding: ${SPACING.xs} ${SPACING.md};
+  font-size: ${FONTS.sizeSmall};
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  white-space: nowrap;
+  margin-left: ${SPACING.md};
+  flex-shrink: 0;
+
+  &:hover {
+    background-color: ${COLORS.primaryHover};
+  }
+
+  &:active {
+    transform: scale(0.98);
+  }
 `;
 
 const DeleteButton = styled.button`
@@ -97,8 +129,10 @@ const AnnotationText = styled.p`
   margin: 0 0 ${SPACING.sm} 0;
   padding-right: ${SPACING.lg}; /* Make space for delete button */
   font-style: italic;
-  color: ${COLORS.textLight}; 
-  word-break: break-word;
+  color: ${COLORS.textLight};
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
   line-height: 1.5;
 `;
 
@@ -137,7 +171,8 @@ const Placeholder = styled.div(globalPlaceholderTextStyles);
 
 const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
   annotations, getTagById, activeFilterTag, style, globalFilterTagName,
-  onTagClick, onTagDoubleClick, allUserTags, onDeleteAnnotation
+  includeDescendantTags = true,
+  onTagClick, onTagDoubleClick, allUserTags, onDeleteAnnotation, novelText
 }) => {
 
   // ✅ 缓存根节点映射和深度映射，避免每次渲染重复计算
@@ -175,6 +210,112 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
     return { rootIdCache: rootCache, depthCache: depthCacheMap };
   }, [allUserTags]);
 
+  // 将连续的标注（中间只有空白/标点）合并为一个片段，避免“一句一句”太碎
+  const groupedAnnotations = useMemo(() => {
+    type GroupedAnnotation = {
+      id: string;
+      annotationIds: string[];
+      startIndex: number;
+      endIndex: number;
+      tagIds: string[];
+      text: string;
+    };
+
+    if (annotations.length === 0) return [] as GroupedAnnotation[];
+
+    const text = novelText ?? '';
+    const hasText = text.length > 0;
+    const sorted = [...annotations].sort((a, b) => a.startIndex - b.startIndex);
+
+    const groups: Array<{
+      id: string;
+      annotationIds: string[];
+      startIndex: number;
+      endIndex: number;
+      tagIdsSet: Set<string>;
+      fallbackTexts: string[];
+    }> = [];
+
+    const gapIsMergeable = (gap: string): boolean => {
+      const trimmed = gap.trim();
+      if (trimmed === '') return true;
+      // 标点符号/符号（比如用户没把句号选进标注）也视为“连续”
+      return /^[\p{P}\p{S}]+$/u.test(trimmed);
+    };
+
+    for (const ann of sorted) {
+      const last = groups[groups.length - 1];
+
+      const annStart = ann.startIndex;
+      const annEnd = ann.endIndex;
+      const annText = ann.text || '';
+
+      if (!last) {
+        groups.push({
+          id: ann.id,
+          annotationIds: [ann.id],
+          startIndex: annStart,
+          endIndex: annEnd,
+          tagIdsSet: new Set(ann.tagIds),
+          fallbackTexts: [annText],
+        });
+        continue;
+      }
+
+      const overlaps = annStart <= last.endIndex;
+      const canSliceGap =
+        hasText &&
+        annStart >= last.endIndex &&
+        annStart <= text.length &&
+        last.endIndex <= text.length &&
+        last.endIndex >= 0;
+
+      const shouldMerge =
+        overlaps ||
+        (canSliceGap && gapIsMergeable(text.slice(last.endIndex, annStart))) ||
+        (!canSliceGap && annStart - last.endIndex <= 5);
+
+      if (!shouldMerge) {
+        groups.push({
+          id: ann.id,
+          annotationIds: [ann.id],
+          startIndex: annStart,
+          endIndex: annEnd,
+          tagIdsSet: new Set(ann.tagIds),
+          fallbackTexts: [annText],
+        });
+        continue;
+      }
+
+      last.annotationIds.push(ann.id);
+      last.startIndex = Math.min(last.startIndex, annStart);
+      last.endIndex = Math.max(last.endIndex, annEnd);
+      ann.tagIds.forEach(tid => last.tagIdsSet.add(tid));
+      if (annText) last.fallbackTexts.push(annText);
+    }
+
+    return groups.map(g => {
+      const canSliceGroup =
+        hasText &&
+        g.startIndex >= 0 &&
+        g.endIndex >= g.startIndex &&
+        g.endIndex <= text.length;
+
+      const mergedText = canSliceGroup
+        ? text.slice(g.startIndex, g.endIndex)
+        : g.fallbackTexts.filter(Boolean).join('\n');
+
+      return {
+        id: g.id,
+        annotationIds: g.annotationIds,
+        startIndex: g.startIndex,
+        endIndex: g.endIndex,
+        tagIds: Array.from(g.tagIdsSet),
+        text: mergedText || '[无文本内容]',
+      };
+    });
+  }, [annotations, novelText]);
+
   const panelTitleContent = () => {
     if (globalFilterTagName) {
       return (
@@ -188,22 +329,54 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
       return (
         <>
           "{activeFilterTag.name}" 的标注
-          <TitleClarification>(及其子标签, 当前小说内)</TitleClarification>
+          <TitleClarification>
+            ({includeDescendantTags ? '及其子标签, ' : ''}当前小说内)
+          </TitleClarification>
         </>
       );
     }
     return "当前小说所有标注";
   };
 
+  const handleCopyAnnotations = () => {
+    if (groupedAnnotations.length === 0) {
+      alert('没有可复制的标注内容');
+      return;
+    }
+
+    const textToCopy = groupedAnnotations
+      .map(ann => ann.text || '[无文本内容]')
+      .join('\n\n');
+
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        alert('已复制所有标注文本到剪贴板！');
+      })
+      .catch(err => {
+        console.error('复制失败:', err);
+        alert('复制失败，请重试');
+      });
+  };
+
   return (
-    <Panel 
-      style={style} 
-      role="region" 
+    <Panel
+      style={style}
+      role="region"
       aria-labelledby={panelTitleId}
     >
-      <Title id={panelTitleId}>
-        {panelTitleContent()}
-      </Title>
+      <TitleContainer>
+        <Title id={panelTitleId}>
+          {panelTitleContent()}
+        </Title>
+        {groupedAnnotations.length > 0 && (
+          <CopyButton
+            onClick={handleCopyAnnotations}
+            title="复制当前标签下的所有标注文本"
+          >
+            📋 复制
+          </CopyButton>
+        )}
+      </TitleContainer>
       {annotations.length === 0 ? (
         <Placeholder> 
             {globalFilterTagName ? `当前小说内没有找到名为 "${globalFilterTagName}" 的标签的任何标注。` 
@@ -212,7 +385,7 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
         </Placeholder>
       ) : (
         <AnnotationList role="list">
-          {annotations.map(ann => {
+          {groupedAnnotations.map(ann => {
             const tagsForAnnotation = ann.tagIds
               .map(id => getTagById(id))
               .filter((t): t is Tag => !!t);
@@ -240,7 +413,7 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
 
             return (
               <AnnotationItem key={ann.id} role="listitem">
-                <AnnotationText>"{ann.text || '[无文本内容]'}"</AnnotationText>
+                <AnnotationText>{ann.text || '[无文本内容]'}</AnnotationText>
                 <AnnotationTagsContainer>
                   {tagGroups.map((group, index) => {
                     // ✅ 使用缓存的深度映射
@@ -285,12 +458,18 @@ const FilterResultsPanel: React.FC<FilterResultsPanelProps> = ({
                 {onDeleteAnnotation && (
                   <DeleteButton
                     onClick={() => {
-                        if (window.confirm(`您确定要删除标注 "${ann.text.substring(0, 30)}..." 吗？`)) {
-                            onDeleteAnnotation(ann.id);
-                        }
+                      const count = ann.annotationIds.length;
+                      const confirmMessage =
+                        count > 1
+                          ? `您确定要删除该片段中的 ${count} 个标注吗？`
+                          : `您确定要删除标注 "${ann.text.substring(0, 30)}..." 吗？`;
+
+                      if (!window.confirm(confirmMessage)) return;
+
+                      ann.annotationIds.forEach(id => onDeleteAnnotation(id));
                     }}
                     aria-label={`删除标注: ${ann.text.substring(0, 20)}...`}
-                    title="删除此标注"
+                    title={ann.annotationIds.length > 1 ? `删除此片段内的 ${ann.annotationIds.length} 个标注` : '删除此标注'}
                   >
                     ✕
                   </DeleteButton>

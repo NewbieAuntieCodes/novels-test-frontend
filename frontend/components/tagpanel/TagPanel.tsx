@@ -13,20 +13,22 @@ interface TagPanelProps {
   onAddTag: (name: string, color: string, parentId: string | null) => void;
   activeTagId: string | null;
   onUpdateTagParent: (tagId: string, newParentId: string | null) => void;
-  onUpdateTagColor: (tagId: string, newColor: string) => void; 
+  onUpdateTagColor: (tagId: string, newColor: string) => void;
   onUpdateTagName: (tagId: string, newName: string) => void;
+  onDeleteTag: (tagId: string) => void;
   novelId: string;
   chapters: Chapter[];
   selectedChapterId: string | null;
   onSelectChapter: (id: string | null) => void;
   style?: CSSProperties;
-  editorMode: EditorMode; 
+  editorMode: EditorMode;
   onApplyTagToSelection: (tagId: string) => void;
   onSelectTagForReadMode: (tagId: string | null) => void;
   onTagGlobalSearch?: (tagName: string) => void;
   // FIX: Add missing props to support creating annotations from selection.
   currentSelection: SelectionDetails | null;
   onCreatePendingAnnotation: () => void;
+  onDeleteAnnotationsInSelection: () => void;
 }
 
 type ViewMode = 'tags' | 'chapters';
@@ -64,15 +66,16 @@ const ViewModeButton = styled.button<{ isActive: boolean }>`
   }
 `;
 
-const TagPanel: React.FC<TagPanelProps> = ({ 
-    tags, onAddTag, activeTagId, 
-    onUpdateTagParent, onUpdateTagColor, onUpdateTagName, 
-    chapters, selectedChapterId, onSelectChapter, 
+const TagPanel: React.FC<TagPanelProps> = ({
+    tags, onAddTag, activeTagId,
+    onUpdateTagParent, onUpdateTagColor, onUpdateTagName, onDeleteTag,
+    chapters, selectedChapterId, onSelectChapter,
     style, editorMode, onApplyTagToSelection, onSelectTagForReadMode,
     onTagGlobalSearch,
     // FIX: Destructure new props.
     currentSelection,
     onCreatePendingAnnotation,
+    onDeleteAnnotationsInSelection,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>('tags');
   
@@ -114,6 +117,7 @@ const TagPanel: React.FC<TagPanelProps> = ({
           onUpdateTagParent={onUpdateTagParent}
           onUpdateTagColor={onUpdateTagColor}
           onUpdateTagName={onUpdateTagName}
+          onDeleteTag={onDeleteTag}
           editorMode={editorMode}
           onApplyTagToSelection={onApplyTagToSelection}
           onSelectTagForReadMode={onSelectTagForReadMode}
@@ -121,6 +125,7 @@ const TagPanel: React.FC<TagPanelProps> = ({
           // FIX: Pass missing props down to TagManagementView.
           currentSelection={currentSelection}
           onCreatePendingAnnotation={onCreatePendingAnnotation}
+          onDeleteAnnotationsInSelection={onDeleteAnnotationsInSelection}
         />
       )}
 

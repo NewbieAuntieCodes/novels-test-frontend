@@ -7,8 +7,8 @@ import { COLORS, SPACING, FONTS, baseButtonStyles, baseButtonHoverStyles, baseIn
 interface NovelSelectorProps {
   novels: Novel[];
   selectedNovelId: string | null;
-  onCreateNovel: (title: string) => void;
-  onUploadNovel: (title: string, text: string) => void;
+  onCreateNovel: (title: string) => Promise<string | undefined>;
+  onUploadNovel: (title: string, text: string) => Promise<string | null | undefined>;
   onSelectNovel: (id: string) => void;
 }
 
@@ -50,10 +50,15 @@ const NovelSelector: React.FC<NovelSelectorProps> = ({ novels, selectedNovelId, 
   const [isUploadHovered, setIsUploadHovered] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (newNovelTitle.trim()) {
-      onCreateNovel(newNovelTitle.trim());
-      setNewNovelTitle('');
+      try {
+        await onCreateNovel(newNovelTitle.trim());
+        setNewNovelTitle('');
+      } catch (error) {
+        console.error('创建小说失败', error);
+        alert('创建小说失败，请重试');
+      }
     }
   };
 
@@ -66,7 +71,10 @@ const NovelSelector: React.FC<NovelSelectorProps> = ({ novels, selectedNovelId, 
           const text = e.target?.result as string;
           const title = file.name.replace(/\.[^/.]+$/, "");
           if (text !== null && text !== undefined) {
-             onUploadNovel(title || "未命名小说", text);
+             onUploadNovel(title || "未命名小说", text).catch(err => {
+               console.error('上传小说失败', err);
+               alert('上传小说失败，请重试');
+             });
           } else {
             alert("文件内容为空或读取失败。");
           }

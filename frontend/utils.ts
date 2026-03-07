@@ -2,6 +2,12 @@ import type { Tag, Chapter, User } from './types'; // Added User for completenes
 
 export const generateId = (): string => Math.random().toString(36).substr(2, 9);
 
+export const normalizeTagKey = (tagName: string): string =>
+  tagName.trim().toLowerCase().replace(/\s+/g, ' ');
+
+export const normalizeNoteTitleKey = (title: string): string =>
+  title.trim().toLowerCase().replace(/\s+/g, '');
+
 // --- Special Tag Constants ---
 export const PENDING_ANNOTATION_TAG_NAME = '待标注';
 export const PENDING_ANNOTATION_TAG_COLOR = '#adb5bd'; // A neutral gray
@@ -26,6 +32,25 @@ export const getAllAncestorTagIds = (tagId: string, allTagsForNovelAndUser: Tag[
     currentTag = allTagsForNovelAndUser.find(t => t.id === currentTag!.parentId);
   }
   return ancestors;
+};
+
+export const getTagPathLabel = (tagId: string, allTagsForNovelAndUser: Tag[], separator = ' / '): string => {
+  const tagById = new Map(allTagsForNovelAndUser.map((tag) => [tag.id, tag]));
+  const names: string[] = [];
+
+  const visited = new Set<string>();
+  let currentId: string | null | undefined = tagId;
+  while (currentId) {
+    if (visited.has(currentId)) break;
+    visited.add(currentId);
+
+    const tag = tagById.get(currentId);
+    if (!tag) break;
+    names.unshift(tag.name);
+    currentId = tag.parentId;
+  }
+
+  return names.join(separator);
 };
 
 // Expects tags specific to a novel and user
@@ -53,6 +78,40 @@ export const getAllDescendantTagIds = (tagId: string, allTagsForNovelAndUser: Ta
     });
   }
   return descendants;
+};
+
+/**
+ * 同根替换：仅替换同一根标签体系下的旧标签，保留其他体系标签。
+ * 同时会自动补齐新标签的祖先标签（与标注逻辑保持一致）。
+ */
+export const applySameRootTagReplacement = (
+  existingTagIds: string[],
+  newLeafTagId: string,
+  allTagsForNovelAndUser: Tag[]
+): string[] => {
+  const ancestorIds = getAllAncestorTagIds(newLeafTagId, allTagsForNovelAndUser);
+  const rootId = ancestorIds.length > 0 ? ancestorIds[ancestorIds.length - 1] : newLeafTagId;
+  const sameRootIds = new Set([rootId, ...getAllDescendantTagIds(rootId, allTagsForNovelAndUser)]);
+
+  const kept = existingTagIds.filter(id => !sameRootIds.has(id));
+  return Array.from(new Set([...kept, newLeafTagId, ...ancestorIds]));
+};
+
+/**
+ * 从一组（包含祖先）tagIds 中推断“叶子标签”（用于 UI 展示）。
+ * 叶子标签 = 不是任何其他标签祖先的标签。
+ */
+export const getLeafTagIds = (tagIds: string[], allTagsForNovelAndUser: Tag[]): string[] => {
+  const unique = Array.from(new Set(tagIds));
+  if (unique.length <= 1) return unique;
+
+  return unique.filter(id => {
+    return !unique.some(otherId => {
+      if (otherId === id) return false;
+      const ancestors = getAllAncestorTagIds(otherId, allTagsForNovelAndUser);
+      return ancestors.includes(id);
+    });
+  });
 };
 
 
@@ -100,7 +159,7 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
     chapters.push({
       id: generateId(),
       title: "内容",
-      content: normalizedText.trim(), // Use normalizedText
+      content: normalizedText, // Use normalizedText
       originalStartIndex: 0,
       originalEndIndex: normalizedText.length, // Use normalizedText length
     });
@@ -111,8 +170,8 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
 
   if (matches[0].index > 0) {
       // Use normalizedText for substring and trim
-      const prefaceContent = normalizedText.substring(0, matches[0].index).trim();
-      if (prefaceContent) {
+      const prefaceContent = normalizedText.substring(0, matches[0].index);
+      if (prefaceContent.trim()) {
           chapters.push({
               id: generateId(),
               title: "前言/序",
@@ -148,9 +207,9 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
     const isolatedChapterContent = normalizedText.substring(
         actualContentStartIndex,
         thisChapterContentEndIndex
-    ).trim();
-    
-    if (chapterTitle || isolatedChapterContent || (thisChapterContentEndIndex > actualContentStartIndex) ) {
+    );
+
+    if (chapterTitle || isolatedChapterContent.trim() || (thisChapterContentEndIndex > actualContentStartIndex) ) {
         chapters.push({
           id: generateId(),
           title: chapterTitle || `章节 ${chapters.length + 1}`,
@@ -164,8 +223,8 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
   
   if (lastProcessedContentEnd < normalizedText.length) { // Use normalizedText length
       // Use normalizedText for substring and trim
-      const remainingContent = normalizedText.substring(lastProcessedContentEnd).trim();
-      if (remainingContent) {
+      const remainingContent = normalizedText.substring(lastProcessedContentEnd);
+      if (remainingContent.trim()) {
           chapters.push({
               id: generateId(),
               title: `后续内容`,
@@ -195,8 +254,12 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
         secondChapter.title.toLowerCase().startsWith(introTitle.toLowerCase())
       )
     ) {
-      const mergedContent = firstChapter.content.trim() + (firstChapter.content.trim() && secondChapter.content.trim() ? "\n\n" : "") + secondChapter.content.trim();
-      
+      // 合并时需要从原文重新提取内容，保持索引一致
+      const mergedContent = normalizedText.substring(
+        firstChapter.originalStartIndex,
+        secondChapter.originalEndIndex
+      );
+
       const newFirstChapter: Chapter = {
         ...secondChapter,
         content: mergedContent,
@@ -207,4 +270,16 @@ export const splitTextIntoChapters = (text: string): Chapter[] => {
   }
   
   return initialProcessedChapters;
+};
+
+/**
+ * 统计文本中的实际字数（不含空格、标点符号）
+ * 仅统计中文字符、英文字母、数字
+ */
+export const countWords = (text: string): number => {
+  if (!text) return 0;
+
+  // 匹配中文字符、英文字母、数字
+  const matches = text.match(/[\u4e00-\u9fa5a-zA-Z0-9]/g);
+  return matches ? matches.length : 0;
 };

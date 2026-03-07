@@ -1,45 +1,34 @@
-// API 配置和请求工具
-export const API_BASE_URL = 'http://localhost:3001/api';
+// 本地模式 Token 管理（仅用于标记当前登录用户）
+const TOKEN_KEY = 'authToken';
+const USER_ID_KEY = 'authUserId';
 
-// Token 管理
 export const TokenManager = {
   getToken(): string | null {
-    return localStorage.getItem('authToken');
+    return localStorage.getItem(TOKEN_KEY);
   },
 
-  setToken(token: string): void {
-    localStorage.setItem('authToken', token);
+  setToken(token: string, userId?: string): void {
+    localStorage.setItem(TOKEN_KEY, token);
+    if (userId) {
+      localStorage.setItem(USER_ID_KEY, userId);
+    }
+  },
+
+  getUserId(): string | null {
+    return localStorage.getItem(USER_ID_KEY);
+  },
+
+  setUserId(userId: string): void {
+    localStorage.setItem(USER_ID_KEY, userId);
   },
 
   removeToken(): void {
-    localStorage.removeItem('authToken');
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_ID_KEY);
   }
 };
 
-// API 请求封装
-export async function apiRequest<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  const token = TokenManager.getToken();
-  const headers: HeadersInit = {
-    'Content-Type': 'application/json',
-    ...(options.headers || {}),
-  };
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: '请求失败' }));
-    throw new Error(error.error || `HTTP Error: ${response.status}`);
-  }
-
-  return response.json();
+// 由于切换为本地 IndexedDB 存储，不再使用远程请求
+export async function apiRequest<T>(): Promise<T> {
+  throw new Error('本地模式下不支持直接发起 API 请求');
 }

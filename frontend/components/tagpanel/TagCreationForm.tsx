@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import styled from '@emotion/styled';
 import type { Tag } from "../types";
 import { getNextColor } from "../../utils";
@@ -8,6 +8,7 @@ interface TagCreationFormProps {
   tags: Tag[];
   onAddTag: (name: string, color: string, parentId: string | null) => void;
   activeTagId: string | null;
+  entityLabel?: string;
 }
 
 const TagForm = styled.form`
@@ -53,23 +54,6 @@ const ColorInput = styled.input`
   cursor: pointer;
 `;
 
-const ParentTagSelect = styled.select`
-  padding: ${SPACING.sm};
-  border: ${BORDERS.width} ${BORDERS.style} ${BORDERS.color};
-  border-radius: ${BORDERS.radius};
-  box-sizing: border-box;
-  background-color: ${COLORS.white};
-  font-size: ${FONTS.sizeSmall};
-  width: 100%;
-  min-width: 150px;
-  
-  &:focus {
-    border-color: ${COLORS.primary};
-    box-shadow: 0 0 0 0.2rem ${COLORS.primary}40;
-    outline: none;
-  }
-`;
-
 const AddButton = styled.button`
   padding: ${SPACING.sm} ${SPACING.lg};
   background-color: ${COLORS.primary};
@@ -87,30 +71,85 @@ const AddButton = styled.button`
   }
 `;
 
+const ParentHint = styled.div`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.textLight};
+  margin-top: -${SPACING.xs};
+  display: flex;
+  gap: ${SPACING.sm};
+  align-items: center;
+`;
+
+const ParentName = styled.span`
+  color: ${COLORS.text};
+  font-weight: 600;
+`;
+
+const ClearParentButton = styled.button`
+  padding: 0;
+  border: none;
+  background: none;
+  color: ${COLORS.primary};
+  cursor: pointer;
+  font-size: ${FONTS.sizeSmall};
+
+  &:hover:not(:disabled) {
+    text-decoration: underline;
+  }
+
+  &:disabled {
+    color: ${COLORS.gray400};
+    cursor: not-allowed;
+    text-decoration: none;
+  }
+`;
 
 const TagCreationForm: React.FC<TagCreationFormProps> = ({
-  tags, onAddTag, activeTagId
+  tags, onAddTag, activeTagId, entityLabel
 }) => {
+  const label = entityLabel || '标签';
   const [newTagName, setNewTagName] = useState('');
   const [newTagColor, setNewTagColor] = useState(getNextColor());
   const [selectedParentIdForForm, setSelectedParentIdForForm] = useState<string | null>(null);
+  const lastActiveTagIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Only follow activeTagId when it changes (avoid overriding manual "top-level"
+    // after the tag list refreshes due to create/delete).
+    if (activeTagId === lastActiveTagIdRef.current) return;
+    lastActiveTagIdRef.current = activeTagId;
+
     if (activeTagId && tags.find(t => t.id === activeTagId)) {
       setSelectedParentIdForForm(activeTagId);
+      return;
+    }
+
+    if (!activeTagId) {
+      setSelectedParentIdForForm(null);
     }
   }, [activeTagId, tags]);
+
+  useEffect(() => {
+    if (!selectedParentIdForForm) return;
+    if (!tags.find(t => t.id === selectedParentIdForForm)) {
+      setSelectedParentIdForForm(null);
+    }
+  }, [selectedParentIdForForm, tags]);
 
   const handleSubmitTag = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTagName.trim()) {
-      alert("标签名称不能为空。");
+      alert(`${label}名称不能为空。`);
       return;
     }
     onAddTag(newTagName, newTagColor, selectedParentIdForForm);
     setNewTagName('');
     setNewTagColor(getNextColor());
   };
+
+  const parentName = selectedParentIdForForm
+    ? (tags.find(t => t.id === selectedParentIdForForm)?.name ?? null)
+    : null;
 
   return (
     <TagForm onSubmit={handleSubmitTag}>
@@ -119,8 +158,8 @@ const TagCreationForm: React.FC<TagCreationFormProps> = ({
           type="text"
           value={newTagName}
           onChange={(e) => setNewTagName(e.target.value)}
-          placeholder="新标签名称"
-          aria-label="新标签名称"
+          placeholder={`新${label}名称`}
+          aria-label={`新${label}名称`}
           required
         />
         <ColorInput
@@ -130,20 +169,21 @@ const TagCreationForm: React.FC<TagCreationFormProps> = ({
           aria-label="新标签颜色"
         />
       </InputGroup>
-      <InputGroup>
-        <ParentTagSelect
-          value={selectedParentIdForForm || ''}
-          onChange={(e) => setSelectedParentIdForForm(e.target.value || null)}
-          aria-label="父标签 (可选)"
-        >
-          <option value="">无父标签 (顶级)</option>
-          {tags.sort((a, b) => a.name.localeCompare(b.name)).map(tag => (
-            <option key={tag.id} value={tag.id}>{tag.name}</option>
-          ))}
-        </ParentTagSelect>
-      </InputGroup>
+      <ParentHint>
+        <span>{`将创建为：`}</span>
+        <ParentName>{parentName ? `${parentName} 的子${label}` : `顶级${label}`}</ParentName>
+        {selectedParentIdForForm && (
+          <ClearParentButton
+            type="button"
+            onClick={() => setSelectedParentIdForForm(null)}
+            title="设为顶级"
+          >
+            设为顶级
+          </ClearParentButton>
+        )}
+      </ParentHint>
       <AddButton type="submit">
-        添加标签
+        添加{label}
       </AddButton>
     </TagForm>
   );

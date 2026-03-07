@@ -11,6 +11,17 @@
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
+    "@tiptap/extension-image": "^3.15.3",
+    "@tiptap/extension-link": "^3.15.3",
+    "@tiptap/extension-placeholder": "^3.15.3",
+    "@tiptap/extension-table": "^3.15.3",
+    "@tiptap/extension-table-cell": "^3.15.3",
+    "@tiptap/extension-table-header": "^3.15.3",
+    "@tiptap/extension-table-row": "^3.15.3",
+    "@tiptap/react": "^3.15.3",
+    "@tiptap/starter-kit": "^3.15.3",
+    "dompurify": "^3.3.1",
+    "marked": "^16.2.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

@@ -12,7 +12,9 @@ export const COLORS = {
   successHover: '#1e7e34',
   danger: '#dc3545',
   dangerHover: '#c82333',
+  dangerLight: '#f8d7da',
   warning: '#ffc107',
+  warningHover: '#e0a800',
   info: '#17a2b8',
   infoHover: '#117a8b',
   light: '#f8f9fa',
@@ -70,6 +72,7 @@ export const BORDERS = {
 export const SHADOWS = {
   small: '0 2px 4px rgba(0, 0, 0, 0.05)',
   medium: '0 4px 12px rgba(0, 0, 0, 0.1)',
+  large: '0 10px 30px rgba(0, 0, 0, 0.2)',
 };
 
 // FIX: Use CSSProperties instead of React.CSSProperties

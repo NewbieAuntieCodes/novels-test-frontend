@@ -1,6 +1,14 @@
-// 标注相关 API
-import { apiRequest } from './config';
-import type { Annotation } from '../types';
+// 标注相关（本地 IndexedDB）
+import type { Annotation, AnnotationLayer } from '../types';
+import { TokenManager } from './config';
+import { generateId } from '../utils';
+import {
+  listAnnotations,
+  listAnnotationsByNovel,
+  saveAnnotation,
+  deleteAnnotation as deleteAnnotationRecord,
+} from '../storage/localDb';
+import { markNovelModified } from '../utils/novelBackupMeta';
 
 interface AnnotationCreateRequest {
   text: string;
@@ -8,45 +16,82 @@ interface AnnotationCreateRequest {
   endIndex: number;
   novelId: string;
   tagIds: string[];
+  annotationLayer?: AnnotationLayer;
   isPotentiallyMisaligned?: boolean;
 }
+
+const normalizeAnnotation = (annotation: Annotation): Annotation => ({
+  ...annotation,
+  annotationLayer: annotation.annotationLayer ?? 'fine',
+});
+
+const requireUserId = (): string => {
+  const userId = TokenManager.getUserId();
+  if (!userId) throw new Error('请先登录');
+  return userId;
+};
 
 export const annotationsApi = {
   // 获取标注列表（可按 novelId 和 tagId 过滤）
   async getAll(params?: { novelId?: string; tagId?: string }): Promise<Annotation[]> {
-    const query = new URLSearchParams();
-    if (params?.novelId) query.append('novelId', params.novelId);
-    if (params?.tagId) query.append('tagId', params.tagId);
-
-    const queryString = query.toString();
-    return apiRequest<Annotation[]>(`/annotations${queryString ? `?${queryString}` : ''}`);
+    const userId = requireUserId();
+    let annotations: Annotation[] = [];
+    if (params?.novelId) {
+      annotations = await listAnnotationsByNovel(userId, params.novelId);
+    } else {
+      annotations = await listAnnotations(userId);
+    }
+    if (params?.tagId) {
+      annotations = annotations.filter(a => a.tagIds?.includes(params.tagId!));
+    }
+    return annotations.map(normalizeAnnotation);
   },
 
   // 全局搜索标注
   async search(keyword: string): Promise<Annotation[]> {
-    return apiRequest<Annotation[]>(`/annotations/search?keyword=${encodeURIComponent(keyword)}`);
+    const userId = requireUserId();
+    const annotations = await listAnnotations(userId);
+    const normalizedKeyword = keyword.trim().toLowerCase();
+    return annotations
+      .map(normalizeAnnotation)
+      .filter(ann =>
+      (ann.text || '').toLowerCase().includes(normalizedKeyword)
+    );
   },
 
   // 创建标注
   async create(data: AnnotationCreateRequest): Promise<Annotation> {
-    return apiRequest<Annotation>('/annotations', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
+    const userId = requireUserId();
+    const annotation: Annotation = {
+      ...data,
+      id: generateId(),
+      userId,
+      annotationLayer: data.annotationLayer ?? 'fine',
+    };
+    await saveAnnotation(annotation);
+    markNovelModified(userId, annotation.novelId);
+    return annotation;
   },
 
   // 更新标注
   async update(id: string, data: Partial<AnnotationCreateRequest>): Promise<Annotation> {
-    return apiRequest<Annotation>(`/annotations/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(data),
-    });
+    const userId = requireUserId();
+    const annotations = await listAnnotations(userId);
+    const existing = annotations.find(a => a.id === id);
+    if (!existing) throw new Error('标注不存在');
+    const updated = normalizeAnnotation({ ...existing, ...data });
+    await saveAnnotation(updated);
+    markNovelModified(userId, updated.novelId);
+    return updated;
   },
 
   // 删除标注
   async delete(id: string): Promise<{ message: string }> {
-    return apiRequest<{ message: string }>(`/annotations/${id}`, {
-      method: 'DELETE',
-    });
+    const userId = requireUserId();
+    const annotations = await listAnnotations(userId);
+    const existing = annotations.find(a => a.id === id);
+    await deleteAnnotationRecord(id);
+    if (existing?.novelId) markNovelModified(userId, existing.novelId);
+    return { message: 'deleted' };
   },
 };

@@ -1,24 +1,38 @@
-import React, { useState, CSSProperties } from 'react';
+import React, { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
 import styled from '@emotion/styled';
 import type { Novel, User, TagTemplate } from "../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, globalPlaceholderTextStyles } from '../../styles';
 import { tagTemplates as staticTagTemplates } from '../tagpanel/tagTemplates';
 import TagTemplateModal from './TagTemplateModal'; // Import the new modal component
 import CategoryModal from '../CategoryModal';
+import EditNovelModal from './EditNovelModal';
+import AuthorNovelsModal from './AuthorNovelsModal';
+import DeleteChaptersModal from './DeleteChaptersModal';
+import { getNovelBackupBadgeLabel, NOVEL_BACKUP_META_CHANGED_EVENT } from '../../utils/novelBackupMeta';
+import { MAIN_CATEGORIES, normalizeMainCategory } from '../../constants/categories';
 
-const MAIN_CATEGORIES = ['男频小说', '女频小说', '电影剧本', '电视剧剧本'];
+const normalizeSearchQuery = (value: string) =>
+  value.replace(/\s+/g, ' ').trim().toLowerCase();
 
 interface NovelProjectsPageProps {
   novels: Novel[];
   currentUser: User;
-  onCreateNovel: (title: string, initialText?: string, templateGenre?: string) => string | undefined;
-  onUploadNovel: (title: string, text: string) => string | null | undefined;
+  onCreateNovel: (title: string, initialText?: string, templateGenre?: string, projectMode?: 'tag' | 'note') => Promise<string | undefined>;
+  onUploadNovel: (title: string, text: string, projectMode?: 'tag' | 'note') => Promise<string | null | undefined>;
   onAppendNovel: (novelId: string, text: string) => Promise<void>;
   onSelectNovel: (id: string) => void;
   onDeleteNovel: (id: string) => void;
+  onDeleteChaptersAfter: (novelId: string, keepChapterCount: number) => Promise<void>;
   onUpdateNovelCategory: (novelId: string, category: string, subcategory: string) => void;
+  onUpdateNovelInfo: (novelId: string, title: string, author: string) => void;
+  onExportData: () => void;
+  onExportNovelData: (novelId: string) => void | Promise<void>;
+  onImportData: (file: File) => void;
   onLogout: () => void;
   onNavigateToTagSearch: () => void;
+  onNavigateToTools: () => void;
+  onNavigateToReferenceLibrary: () => void;
+  onNavigateToNotes: () => void;
   tagTemplates: TagTemplate[];
   onUpdateTemplates: (templates: TagTemplate[]) => void;
 }
@@ -197,6 +211,8 @@ const TemplateSelect = styled.select`
   }
 `;
 
+const ModeSelect = styled(TemplateSelect)``;
+
 const CreateButton = styled(BaseButton)`
   white-space: nowrap;
   height: 38px; /* Match input height */
@@ -214,6 +230,44 @@ const GlobalTagSearchButton = styled(BaseButton)`
   padding: ${SPACING.sm} ${SPACING.md};
   &:hover:not(:disabled) {
     background-color: ${COLORS.infoHover};
+  }
+`;
+
+const ToolsButton = styled(BaseButton)`
+  background-color: ${COLORS.secondary};
+  padding: ${SPACING.sm} ${SPACING.md};
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.secondaryHover};
+  }
+`;
+
+const ExportButton = styled(BaseButton)`
+  background-color: ${COLORS.gray700};
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.gray800};
+  }
+`;
+
+const ImportButton = styled(BaseButton)`
+  background-color: ${COLORS.warning};
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.warningHover};
+  }
+`;
+
+const ReferenceLibraryButton = styled(BaseButton)`
+  background-color: ${COLORS.primary};
+  padding: ${SPACING.sm} ${SPACING.md};
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.primaryHover};
+  }
+`;
+
+const NotesButton = styled(BaseButton)`
+  background-color: ${COLORS.gray700};
+  padding: ${SPACING.sm} ${SPACING.md};
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.gray800};
   }
 `;
 
@@ -251,6 +305,25 @@ const NovelInfo = styled.div`
   flex-grow: 1;
 `;
 
+const NovelTitleRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: ${SPACING.md};
+  flex-wrap: wrap;
+`;
+
+const BackupStatusBadge = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.danger};
+  background-color: ${COLORS.dangerLight};
+  border: 1px solid ${COLORS.danger};
+  padding: 1px ${SPACING.sm};
+  border-radius: 999px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+`;
+
 const NovelTitle = styled.span`
   font-size: ${FONTS.sizeLarge};
   color: ${COLORS.primary};
@@ -260,6 +333,21 @@ const NovelTitle = styled.span`
 
   &:hover {
     text-decoration: underline;
+  }
+`;
+
+const AuthorTag = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.primary};
+  background-color: ${COLORS.gray100};
+  padding: ${SPACING.xs} ${SPACING.sm};
+  border-radius: ${SPACING.xs};
+  border: 1px solid ${COLORS.primary};
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    background-color: ${COLORS.primaryLight};
   }
 `;
 
@@ -274,6 +362,15 @@ const CategoryTag = styled.span`
   font-size: ${FONTS.sizeSmall};
   color: ${COLORS.white};
   background-color: ${COLORS.info};
+  padding: ${SPACING.xs} ${SPACING.sm};
+  border-radius: ${SPACING.xs};
+  white-space: nowrap;
+`;
+
+const ProjectModeTag = styled.span`
+  font-size: ${FONTS.sizeSmall};
+  color: ${COLORS.white};
+  background-color: ${COLORS.secondary};
   padding: ${SPACING.xs} ${SPACING.sm};
   border-radius: ${SPACING.xs};
   white-space: nowrap;
@@ -326,6 +423,24 @@ const AppendButton = styled(BaseButton)`
   }
 `;
 
+const DeleteChaptersButton = styled(BaseButton)`
+  background-color: ${COLORS.warning};
+  padding: ${SPACING.xs} ${SPACING.md};
+
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.warningHover};
+  }
+`;
+
+const ExportNovelButton = styled(BaseButton)`
+  background-color: ${COLORS.secondary};
+  padding: ${SPACING.xs} ${SPACING.md};
+
+  &:hover:not(:disabled) {
+    background-color: ${COLORS.secondaryHover};
+  }
+`;
+
 const HiddenFileInput = styled.input`
   display: none;
 `;
@@ -369,6 +484,60 @@ const CategoryFilterButton = styled.button<{ isActive: boolean }>`
   }
 `;
 
+const NovelSearchContainer = styled.div`
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 260px;
+`;
+
+const NovelSearchInputWrapper = styled.div`
+  position: relative;
+  width: min(520px, 100%);
+`;
+
+const NovelSearchInput = styled.input`
+  padding: ${SPACING.sm} ${SPACING.xl} ${SPACING.sm} ${SPACING.sm};
+  border: ${BORDERS.width} ${BORDERS.style} ${BORDERS.color};
+  border-radius: ${BORDERS.radius};
+  box-sizing: border-box;
+  background-color: ${COLORS.white};
+  font-size: ${FONTS.sizeSmall};
+  width: 100%;
+  height: 38px;
+
+  &:focus {
+    border-color: ${COLORS.primary};
+    box-shadow: 0 0 0 0.2rem ${COLORS.primary}40;
+    outline: none;
+  }
+`;
+
+const NovelSearchClearButton = styled.button`
+  position: absolute;
+  top: 50%;
+  right: ${SPACING.sm};
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: ${COLORS.gray600};
+  cursor: pointer;
+  padding: 0;
+  font-size: ${FONTS.sizeBase};
+  line-height: 1;
+
+  &:hover {
+    color: ${COLORS.gray800};
+  }
+
+  &:focus {
+    outline: none;
+    box-shadow: 0 0 0 0.2rem ${COLORS.primary}40;
+    border-radius: ${BORDERS.radius};
+  }
+`;
+
 const SubcategorySection = styled.div`
   margin-bottom: ${SPACING.lg};
 `;
@@ -386,21 +555,49 @@ const SubcategoryTitle = styled.h4`
 `;
 
 const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
-  novels, currentUser, onCreateNovel, onUploadNovel, onAppendNovel, onSelectNovel, onDeleteNovel, onUpdateNovelCategory, onLogout,
-  onNavigateToTagSearch, tagTemplates, onUpdateTemplates
+  novels, currentUser, onCreateNovel, onUploadNovel, onAppendNovel, onSelectNovel, onDeleteNovel, onDeleteChaptersAfter, onUpdateNovelCategory, onUpdateNovelInfo, onExportData, onExportNovelData, onImportData, onLogout,
+  onNavigateToTagSearch, onNavigateToTools, onNavigateToReferenceLibrary, onNavigateToNotes, tagTemplates, onUpdateTemplates
 }) => {
   const [newNovelTitle, setNewNovelTitle] = useState('');
+  const [projectMode, setProjectMode] = useState<'tag' | 'note'>('tag');
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [categoryModalNovel, setCategoryModalNovel] = useState<Novel | null>(null);
+  const [editModalNovel, setEditModalNovel] = useState<Novel | null>(null);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
+  const [novelSearchText, setNovelSearchText] = useState('');
+  const [debouncedNovelSearchQuery, setDebouncedNovelSearchQuery] = useState('');
+  const novelSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [appendingNovelId, setAppendingNovelId] = useState<string | null>(null);
+  const [authorModalAuthor, setAuthorModalAuthor] = useState<string | null>(null);
+  const [deleteChaptersModalNovel, setDeleteChaptersModalNovel] = useState<Novel | null>(null);
+  const [backupMetaVersion, setBackupMetaVersion] = useState(0);
 
-  const handleCreate = () => {
+  useEffect(() => {
+    const handler = () => setBackupMetaVersion(v => v + 1);
+    window.addEventListener(NOVEL_BACKUP_META_CHANGED_EVENT, handler as EventListener);
+    return () => window.removeEventListener(NOVEL_BACKUP_META_CHANGED_EVENT, handler as EventListener);
+  }, []);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedNovelSearchQuery(normalizeSearchQuery(novelSearchText));
+    }, 200);
+
+    return () => window.clearTimeout(handle);
+  }, [novelSearchText]);
+
+  useEffect(() => {
+    if (projectMode === 'note' && selectedTemplate) {
+      setSelectedTemplate('');
+    }
+  }, [projectMode, selectedTemplate]);
+
+  const handleCreate = async () => {
     if (newNovelTitle.trim()) {
-      const newNovelId = onCreateNovel(newNovelTitle.trim(), '', selectedTemplate || undefined);
+      const newNovelId = await onCreateNovel(newNovelTitle.trim(), '', selectedTemplate || undefined, projectMode);
       if (newNovelId) {
         onSelectNovel(newNovelId);
       }
@@ -420,7 +617,7 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
         if (text !== null && text !== undefined) {
           try {
             setIsUploading(true);
-            const newNovelId = await onUploadNovel(titleFromFile || "未命名小说", text);
+            const newNovelId = await onUploadNovel(titleFromFile || "未命名小说", text, projectMode);
             if (newNovelId) {
               onSelectNovel(newNovelId);
             }
@@ -448,6 +645,20 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     if (file) {
       await processFile(file);
       event.target.value = '';
+    }
+  };
+
+  const handleBackupImportChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        await onImportData(file);
+      } catch (err) {
+        console.error('导入数据失败', err);
+        alert('导入数据失败，请检查备份文件格式');
+      } finally {
+        event.target.value = '';
+      }
     }
   };
 
@@ -492,6 +703,21 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     }
   };
 
+  const handleEditModalSave = async (title: string, author: string): Promise<void> => {
+    if (editModalNovel) {
+      await onUpdateNovelInfo(editModalNovel.id, title, author);
+      setEditModalNovel(null);
+    }
+  };
+
+  const handleAuthorClick = (author: string) => {
+    setAuthorModalAuthor(author);
+  };
+
+  const getNovelsByAuthor = (author: string): Novel[] => {
+    return novels.filter(novel => novel.author === author);
+  };
+
   const handleAppendFile = async (novelId: string) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -526,10 +752,28 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
     input.click();
   };
 
-  // 筛选小说
-  const filteredNovels = selectedCategoryFilter
-    ? novels.filter(novel => novel.category === selectedCategoryFilter)
-    : novels;
+  // 筛选小说（分类 + 搜索）
+  const filteredNovels = useMemo(() => {
+    const categoryFiltered = selectedCategoryFilter
+      ? novels.filter(novel => normalizeMainCategory(novel.category) === selectedCategoryFilter)
+      : novels;
+
+    if (!debouncedNovelSearchQuery) return categoryFiltered;
+
+    const parts = debouncedNovelSearchQuery.split(' ').filter(Boolean);
+    return categoryFiltered.filter(novel => {
+      const haystack = `${novel.title} ${novel.author ?? ''}`.toLowerCase();
+      return parts.every(part => haystack.includes(part));
+    });
+  }, [selectedCategoryFilter, novels, debouncedNovelSearchQuery]);
+
+  const backupBadgeByNovelId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getNovelBackupBadgeLabel>>();
+    filteredNovels.forEach(novel => {
+      map.set(novel.id, getNovelBackupBadgeLabel(currentUser.id, novel.id));
+    });
+    return map;
+  }, [filteredNovels, currentUser.id, backupMetaVersion]);
 
   // 按子分类分组
   const novelsBySubcategory = filteredNovels.reduce((acc, novel) => {
@@ -577,12 +821,25 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
               />
             </InputContainer>
             <SelectContainer>
-              <FieldLabel htmlFor="template-select">标签模板 (可选)</FieldLabel>
+              <FieldLabel htmlFor="project-mode-select">默认工作区</FieldLabel>
+              <ModeSelect
+                id="project-mode-select"
+                value={projectMode}
+                onChange={(e) => setProjectMode(e.target.value as 'tag' | 'note')}
+                aria-label="选择默认工作区"
+              >
+                <option value="tag">标签工作区</option>
+                <option value="note">笔记工作区</option>
+              </ModeSelect>
+            </SelectContainer>
+            <SelectContainer>
+              <FieldLabel htmlFor="template-select">标签模板 (仅标签工作区)</FieldLabel>
               <TemplateSelect
                 id="template-select"
                 value={selectedTemplate}
                 onChange={(e) => setSelectedTemplate(e.target.value)}
                 aria-label="选择标签模板"
+                disabled={projectMode !== 'tag'}
               >
                 <option value="">不使用模板</option>
                 {tagTemplates.map(template => (
@@ -604,6 +861,13 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
               onChange={handleFileChange}
               aria-hidden="true"
             />
+            <HiddenFileInput
+              type="file"
+              id="backup-file-input"
+              accept=".json,application/json"
+              onChange={handleBackupImportChange}
+              aria-hidden="true"
+            />
             <TemplateViewButton onClick={() => setIsTemplateModalOpen(true)}>
               编辑模板
             </TemplateViewButton>
@@ -622,6 +886,41 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
             >
               全局标签搜索
             </GlobalTagSearchButton>
+            <NotesButton
+              type="button"
+              onClick={onNavigateToNotes}
+              aria-label="笔记"
+            >
+              笔记
+            </NotesButton>
+            <ReferenceLibraryButton
+              type="button"
+              onClick={onNavigateToReferenceLibrary}
+              aria-label="资料库"
+            >
+              资料库
+            </ReferenceLibraryButton>
+            <ToolsButton
+              type="button"
+              onClick={onNavigateToTools}
+              aria-label="工具辅助"
+            >
+              工具辅助
+            </ToolsButton>
+            <ExportButton
+              type="button"
+              onClick={onExportData}
+              aria-label="导出本地数据"
+            >
+              导出数据
+            </ExportButton>
+            <ImportButton
+              type="button"
+              onClick={() => document.getElementById('backup-file-input')?.click()}
+              aria-label="导入本地数据"
+            >
+              导入数据
+            </ImportButton>
           </ToolsContainer>
         </NovelActions>
       </Section>
@@ -647,12 +946,43 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
               {category}
             </CategoryFilterButton>
           ))}
+          <NovelSearchContainer>
+            <NovelSearchInputWrapper>
+              <NovelSearchInput
+                ref={novelSearchInputRef}
+                type="text"
+                value={novelSearchText}
+                onChange={(e) => setNovelSearchText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setNovelSearchText('');
+                    e.preventDefault();
+                  }
+                }}
+                placeholder="搜索小说名 / 作者..."
+                aria-label="搜索小说"
+              />
+              {novelSearchText.trim() !== '' && (
+                <NovelSearchClearButton
+                  type="button"
+                  onClick={() => {
+                    setNovelSearchText('');
+                    novelSearchInputRef.current?.focus();
+                  }}
+                  aria-label="清空搜索"
+                  title="清空搜索"
+                >
+                  x
+                </NovelSearchClearButton>
+              )}
+            </NovelSearchInputWrapper>
+          </NovelSearchContainer>
         </CategoryFilterSection>
 
         {novels.length === 0 ? (
           <Placeholder>您还没有任何小说项目。尝试创建一个或上传一个吧！</Placeholder>
         ) : filteredNovels.length === 0 ? (
-          <Placeholder>没有符合筛选条件的小说。</Placeholder>
+          <Placeholder>没有符合筛选/搜索条件的小说。</Placeholder>
         ) : (
           <SubcategorySection>
             {subcategories.map(subcategory => (
@@ -662,33 +992,63 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
                   {novelsBySubcategory[subcategory].map(novel => (
                     <NovelItem key={novel.id}>
                       <NovelInfo>
-                        <NovelTitle
-                          onClick={() => onSelectNovel(novel.id)}
-                          tabIndex={0}
-                          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onSelectNovel(novel.id)}
-                        >
-                          {novel.title}
-                        </NovelTitle>
-                        {(novel.category || novel.subcategory) && (
-                          <NovelCategoryInfo>
-                            {novel.category && <CategoryTag>{novel.category}</CategoryTag>}
-                            {novel.subcategory && <SubcategoryTag>{novel.subcategory}</SubcategoryTag>}
-                          </NovelCategoryInfo>
-                        )}
+                        <NovelTitleRow>
+                          <NovelTitle
+                            onClick={() => onSelectNovel(novel.id)}
+                            tabIndex={0}
+                            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onSelectNovel(novel.id)}
+                          >
+                            {novel.title}
+                          </NovelTitle>
+                          {(() => {
+                            const label = backupBadgeByNovelId.get(novel.id) || null;
+                            if (!label) return null;
+                            return (
+                              <BackupStatusBadge title={label === '更新' ? '本书已修改但未导出' : '本书尚未导出'}>
+                                {label}
+                              </BackupStatusBadge>
+                            );
+                          })()}
+                          {novel.projectMode === 'note' && <ProjectModeTag title="默认打开笔记工作区">默认：笔记</ProjectModeTag>}
+                          {novel.author && (
+                            <AuthorTag onClick={() => handleAuthorClick(novel.author!)}>
+                              作者：{novel.author}
+                            </AuthorTag>
+                          )}
+                        </NovelTitleRow>
+                          {(() => {
+                            const displayCategory = normalizeMainCategory(novel.category);
+                            if (!displayCategory && !novel.subcategory) return null;
+                            return (
+                              <NovelCategoryInfo>
+                                {displayCategory && <CategoryTag>{displayCategory}</CategoryTag>}
+                                {novel.subcategory && <SubcategoryTag>{novel.subcategory}</SubcategoryTag>}
+                              </NovelCategoryInfo>
+                            );
+                          })()}
                       </NovelInfo>
                       <NovelItemActions>
                         <CategoryButton onClick={() => setCategoryModalNovel(novel)}>
                           分类
                         </CategoryButton>
-                        <EditNovelButton onClick={() => onSelectNovel(novel.id)}>
+                        <EditNovelButton onClick={() => setEditModalNovel(novel)}>
                           编辑
                         </EditNovelButton>
+                        <ExportNovelButton onClick={() => onExportNovelData(novel.id)}>
+                          导出本书
+                        </ExportNovelButton>
                         <AppendButton
                           onClick={() => handleAppendFile(novel.id)}
                           disabled={appendingNovelId === novel.id}
                         >
                           {appendingNovelId === novel.id ? '追加中...' : '继续上传'}
                         </AppendButton>
+                        <DeleteChaptersButton
+                          onClick={() => setDeleteChaptersModalNovel(novel)}
+                          disabled={!novel.chapters || novel.chapters.length <= 1}
+                        >
+                          删除后续章节
+                        </DeleteChaptersButton>
                         <DeleteNovelButton onClick={() => confirmDelete(novel.id, novel.title)}>
                           删除
                         </DeleteNovelButton>
@@ -712,8 +1072,29 @@ const NovelProjectsPage: React.FC<NovelProjectsPageProps> = ({
         novelTitle={categoryModalNovel?.title || ''}
         currentCategory={categoryModalNovel?.category || null}
         currentSubcategory={categoryModalNovel?.subcategory || null}
+        allNovels={novels}
         onClose={() => setCategoryModalNovel(null)}
         onSave={handleCategoryModalSave}
+      />
+      <EditNovelModal
+        isOpen={!!editModalNovel}
+        novelTitle={editModalNovel?.title || ''}
+        novelAuthor={editModalNovel?.author}
+        onClose={() => setEditModalNovel(null)}
+        onSave={handleEditModalSave}
+      />
+      <AuthorNovelsModal
+        isOpen={!!authorModalAuthor}
+        authorName={authorModalAuthor || ''}
+        novels={authorModalAuthor ? getNovelsByAuthor(authorModalAuthor) : []}
+        onClose={() => setAuthorModalAuthor(null)}
+        onSelectNovel={onSelectNovel}
+      />
+      <DeleteChaptersModal
+        isOpen={!!deleteChaptersModalNovel}
+        novel={deleteChaptersModalNovel}
+        onClose={() => setDeleteChaptersModalNovel(null)}
+        onConfirm={onDeleteChaptersAfter}
       />
     </ProjectsPage>
   );

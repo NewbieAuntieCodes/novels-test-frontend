@@ -1,10 +1,11 @@
 // FIX: Import Dispatch and SetStateAction to resolve React namespace errors.
-import { useState, useEffect, useCallback, useMemo, Dispatch, SetStateAction } from 'react';
-import type { Novel, Tag, Annotation, SelectionDetails, Chapter, User, Storyline, PlotAnchor } from '../../../types';
-import { generateId, getAllAncestorTagIds, getAllDescendantTagIds, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME } from '../../../utils';
+import { useState, useEffect, useCallback, useMemo, Dispatch, SetStateAction, useRef } from 'react';
+import type { Novel, Tag, Annotation, AnnotationLayer, SelectionDetails, Chapter, User, Storyline, PlotAnchor, TagTemplate, TagTemplateDefinition } from '../../../types';
+import { generateId, getAllAncestorTagIds, getAllDescendantTagIds, splitTextIntoChapters, PENDING_ANNOTATION_TAG_NAME, getNextColor } from '../../../utils';
 import type { EditorMode } from '../NovelEditorPage';
 import { annotationsApi, novelsApi } from '../../../api';
 import { tagCompatApi as tagsApi } from '../../../api/tagCompat';
+import { getNovelReadingPosition } from '../../../utils/novelReadingPosition';
 
 interface UseNovelEditorStateProps {
   novel: Novel;
@@ -30,30 +31,70 @@ export const useNovelEditorState = ({
 }: UseNovelEditorStateProps) => {
   const [activeTagId, setActiveTagIdInternal] = useState<string | null>(null);
   const [currentSelection, setCurrentSelection] = useState<SelectionDetails | null>(null);
-  const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
+  const [selectedChapterId, setSelectedChapterId] = useState<string | null>(() => {
+    const savedPosition = getNovelReadingPosition(currentUser.id, novel.id);
+    if (savedPosition?.chapterId && novel.chapters?.some(ch => ch.id === savedPosition.chapterId)) {
+      return savedPosition.chapterId;
+    }
+    if (novel.chapters && novel.chapters.length > 0) {
+      const sortedChapters = [...novel.chapters].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+      return sortedChapters[0]?.id ?? null;
+    }
+    return null;
+  });
   const [globalFilterTagName, setGlobalFilterTagNameInternal] = useState<string | null>(null);
+  const [includeChildTagsInReadMode, setIncludeChildTagsInReadMode] = useState<boolean>(true);
 
   // Storyline state
   const [activeStorylineId, setActiveStorylineId] = useState<string | null>(null);
   const [scrollToAnchorId, setScrollToAnchorId] = useState<string | null>(null);
 
+  // 🆕 Track pending annotation creation promises to prevent deletion of temporary IDs
+  const pendingCreationPromises = useRef<Map<string, Promise<string>>>(new Map()); // tempId -> Promise<realId>
+
+  const activeTagPlacementType: 'tag' | 'rangeTag' =
+    editorMode === 'plotRange' || editorMode === 'plotRangeRead' ? 'rangeTag' : 'tag';
 
   // 🆕 只显示当前小说的标签（不包含全局标签）
   const currentUserTags = useMemo(
     () => allUserTags.filter(t =>
-      t.userId === currentUser.id && t.novelId === novel.id
+      t.userId === currentUser.id &&
+      t.novelId === novel.id &&
+      (t.placementType ?? 'tag') === activeTagPlacementType
     ),
-    [allUserTags, currentUser.id, novel.id]
+    [allUserTags, currentUser.id, novel.id, activeTagPlacementType]
   );
 
   const pendingTag = useMemo(() =>
-    allUserTags.find(t => t.userId === currentUser.id && t.name === PENDING_ANNOTATION_TAG_NAME && t.novelId === novel.id),
-    [allUserTags, currentUser.id, novel.id]
+    allUserTags.find(t =>
+      t.userId === currentUser.id &&
+      t.name === PENDING_ANNOTATION_TAG_NAME &&
+      t.novelId === novel.id &&
+      (t.placementType ?? 'tag') === activeTagPlacementType
+    ),
+    [allUserTags, currentUser.id, novel.id, activeTagPlacementType]
   );
 
+  const resolveAnnotationLayer = useCallback(
+    (annotation: Annotation): AnnotationLayer => annotation.annotationLayer ?? 'fine',
+    []
+  );
+  const activeAnnotationLayer: AnnotationLayer =
+    editorMode === 'plotRange' || editorMode === 'plotRangeRead' ? 'range' : 'fine';
+  const isReadMode = editorMode === 'read' || editorMode === 'plotRangeRead';
+  const isSelectionEnabledMode = isReadMode || editorMode === 'annotation' || editorMode === 'plotRange';
+
   const annotationsForCurrentNovel = useMemo(
-    () => allUserAnnotations.filter(a => a.novelId === novel.id && a.userId === currentUser.id).sort((a, b) => a.startIndex - b.startIndex),
-    [allUserAnnotations, novel.id, currentUser.id]
+    () =>
+      allUserAnnotations
+        .filter(
+          (a) =>
+            a.novelId === novel.id &&
+            a.userId === currentUser.id &&
+            resolveAnnotationLayer(a) === activeAnnotationLayer
+        )
+        .sort((a, b) => a.startIndex - b.startIndex),
+    [allUserAnnotations, novel.id, currentUser.id, resolveAnnotationLayer, activeAnnotationLayer]
   );
   
   const currentChapterDetails = useMemo(() => {
@@ -65,9 +106,16 @@ export const useNovelEditorState = ({
     (tagId: string): Tag | undefined => currentUserTags.find(t => t.id === tagId),
     [currentUserTags]
   );
+
+  useEffect(() => {
+    if (!activeTagId) return;
+    if (!currentUserTags.some(t => t.id === activeTagId)) {
+      setActiveTagIdInternal(null);
+    }
+  }, [activeTagId, currentUserTags]);
   
   useEffect(() => {
-    if (editorMode === 'read') {
+    if (isReadMode) {
       // 不再清空章节选择,保留用户的章节选择状态
       // if (activeTagId) {
       //   setSelectedChapterId(null);
@@ -79,7 +127,7 @@ export const useNovelEditorState = ({
       setActiveStorylineId(null);
       setScrollToAnchorId(null);
     }
-  }, [editorMode, activeTagId]);
+  }, [editorMode, isReadMode, activeTagId]);
 
 
   useEffect(() => {
@@ -269,6 +317,142 @@ export const useNovelEditorState = ({
     }
   };
 
+  const handleSplitChapterAtCursor = async (chapterId: string, newContent: string, cursorOffset: number) => {
+    if (!novel.chapters) return;
+    const chapterToSplit = novel.chapters.find(c => c.id === chapterId);
+    if (!chapterToSplit) return;
+
+    const normalizedNewContent = newContent.replace(/\r\n|\r/g, '\n');
+    if (cursorOffset <= 0 || cursorOffset >= normalizedNewContent.length) {
+      alert('请将光标放在章节中间位置后再拆分。');
+      return;
+    }
+
+    const leftContent = normalizedNewContent.slice(0, cursorOffset);
+    const rightContent = normalizedNewContent.slice(cursorOffset);
+    if (leftContent.length === 0 || rightContent.length === 0) {
+      alert('拆分后章节不能为空，请调整光标位置。');
+      return;
+    }
+
+    const textBefore = novel.text.substring(0, chapterToSplit.originalStartIndex);
+    const textAfter = novel.text.substring(chapterToSplit.originalEndIndex);
+    const newFullText = textBefore + normalizedNewContent + textAfter;
+
+    const lengthDifference = normalizedNewContent.length - chapterToSplit.content.length;
+
+    let foundChapter = false;
+    const shiftedChapters = novel.chapters.map(c => {
+      if (c.id === chapterId) {
+        foundChapter = true;
+        return {
+          ...c,
+          content: normalizedNewContent,
+          originalEndIndex: c.originalEndIndex + lengthDifference,
+          htmlContent: undefined,
+        };
+      }
+      if (foundChapter) {
+        return {
+          ...c,
+          originalStartIndex: c.originalStartIndex + lengthDifference,
+          originalEndIndex: c.originalEndIndex + lengthDifference,
+        };
+      }
+      return c;
+    });
+
+    const splitIndex = shiftedChapters.findIndex(c => c.id === chapterId);
+    if (splitIndex < 0) return;
+
+    const chapterAfterShift = shiftedChapters[splitIndex];
+    const splitAbsoluteIndex = chapterAfterShift.originalStartIndex + cursorOffset;
+
+    const firstChapter: Chapter = {
+      ...chapterAfterShift,
+      content: leftContent,
+      originalEndIndex: splitAbsoluteIndex,
+      htmlContent: undefined,
+    };
+
+    const secondChapter: Chapter = {
+      id: generateId(),
+      title: chapterAfterShift.title,
+      content: rightContent,
+      htmlContent: undefined,
+      originalStartIndex: splitAbsoluteIndex,
+      originalEndIndex: chapterAfterShift.originalEndIndex,
+      level: chapterAfterShift.level ?? 5,
+    };
+
+    const updatedChapters = [
+      ...shiftedChapters.slice(0, splitIndex),
+      firstChapter,
+      secondChapter,
+      ...shiftedChapters.slice(splitIndex + 1),
+    ];
+
+    const updatedAnnotations = allUserAnnotations.map(ann => {
+      if (ann.novelId !== novel.id || ann.userId !== currentUser.id) return ann;
+
+      let newStartIndex = -1;
+      const searchWindowStart = Math.max(0, ann.startIndex - 200);
+      const searchWindowEnd = Math.min(newFullText.length, ann.endIndex + 200);
+      const textToSearchIn = newFullText.substring(searchWindowStart, searchWindowEnd);
+
+      const localIndex = textToSearchIn.indexOf(ann.text);
+      if (localIndex !== -1) {
+        newStartIndex = searchWindowStart + localIndex;
+      } else {
+        newStartIndex = newFullText.indexOf(ann.text);
+      }
+
+      if (newStartIndex !== -1) {
+        return {
+          ...ann,
+          startIndex: newStartIndex,
+          endIndex: newStartIndex + ann.text.length,
+          isPotentiallyMisaligned: undefined,
+        };
+      }
+
+      return { ...ann, isPotentiallyMisaligned: true };
+    });
+    setAllUserAnnotations(updatedAnnotations);
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, text: newFullText, chapters: updatedChapters } : n
+    ));
+
+    // 默认切到新章节，方便继续编辑“光标后”的内容。
+    setSelectedChapterId(secondChapter.id);
+    setActiveTagIdInternal(null);
+    setGlobalFilterTagNameInternal(null);
+    setCurrentSelection(null);
+
+    try {
+      await novelsApi.update(novel.id, {
+        text: newFullText,
+        chapters: updatedChapters,
+      });
+
+      const annotationsToUpdate = updatedAnnotations.filter(
+        ann => ann.novelId === novel.id && ann.userId === currentUser.id
+      );
+      for (const ann of annotationsToUpdate) {
+        await annotationsApi.update(ann.id, {
+          startIndex: ann.startIndex,
+          endIndex: ann.endIndex,
+        });
+      }
+
+      console.log('[拆分章节] 章节拆分并保存成功');
+    } catch (error) {
+      console.error('[拆分章节] 保存到数据库失败:', error);
+      alert('拆分章节失败，请重试');
+    }
+  };
+
   const handleDeleteChapter = async (chapterId: string) => {
     if (!novel.chapters) return;
 
@@ -367,7 +551,7 @@ export const useNovelEditorState = ({
 
     // 保存到数据库
     try {
-      await novelsApi.update(novel.id, {
+      await novelsApi.updateFromCache(novel, {
         chapters: updatedChapters,
       });
 
@@ -375,6 +559,198 @@ export const useNovelEditorState = ({
     } catch (error) {
       console.error('[重命名] 保存到数据库失败:', error);
       alert('重命名章节失败，请重试');
+    }
+  };
+
+  const handleUpdateChapterLevel = async (chapterId: string, newLevel: number) => {
+    if (!novel.chapters) return;
+
+    const updatedChapters = novel.chapters.map(c =>
+      c.id === chapterId ? { ...c, level: newLevel } : c
+    );
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, chapters: updatedChapters } : n
+    ));
+
+    // 保存到数据库
+    try {
+      await novelsApi.updateFromCache(novel, {
+        chapters: updatedChapters,
+      });
+
+      console.log('[章节级别] 章节级别已更新并保存到数据库');
+    } catch (error) {
+      console.error('[章节级别] 保存到数据库失败:', error);
+      alert('更新章节级别失败，请重试');
+    }
+  };
+
+  const handleCreateChapter = async () => {
+    const chapterCount = novel.chapters?.length ?? 0;
+    const title = `新章节 ${chapterCount + 1}`;
+
+    const chapters = novel.chapters || [];
+    const selectedIndex = selectedChapterId ? chapters.findIndex(c => c.id === selectedChapterId) : -1;
+    const insertIndex = selectedIndex >= 0 ? selectedIndex : chapters.length;
+
+    // Insert before the selected chapter by default. Keep indices stable by using the selected chapter's start index.
+    // The new chapter is created with empty content so the range is zero-length until the user edits it.
+    const startIndex = selectedIndex >= 0 ? chapters[selectedIndex].originalStartIndex : (novel.text || '').length;
+
+    const newChapter: Chapter = {
+      id: generateId(),
+      title,
+      content: '',
+      htmlContent: '',
+      originalStartIndex: startIndex,
+      originalEndIndex: startIndex,
+      level: 5,
+    };
+
+    const updatedChapters = [
+      ...chapters.slice(0, insertIndex),
+      newChapter,
+      ...chapters.slice(insertIndex),
+    ];
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, chapters: updatedChapters } : n
+    ));
+
+    setSelectedChapterId(newChapter.id);
+    setActiveTagIdInternal(null);
+    setGlobalFilterTagNameInternal(null);
+    setCurrentSelection(null);
+
+    try {
+      await novelsApi.updateFromCache(novel, {
+        chapters: updatedChapters,
+      });
+
+      console.log('[新建章节] 章节已创建并保存到数据库');
+    } catch (error) {
+      console.error('[新建章节] 保存到数据库失败:', error);
+      alert('新建章节失败，请重试');
+    }
+  };
+
+  const handleMergeChapterWithPrevious = async (chapterId: string) => {
+    if (!novel.chapters) return;
+
+    const chapters = novel.chapters;
+    const idx = chapters.findIndex(c => c.id === chapterId);
+    if (idx <= 0) return;
+
+    const prev = chapters[idx - 1];
+    const current = chapters[idx];
+
+    const fullText = novel.text || '';
+    const mergedStart = Math.max(0, prev.originalStartIndex);
+    const mergedEnd = Math.max(mergedStart, current.originalEndIndex);
+    const mergedContent = fullText.substring(mergedStart, mergedEnd);
+
+    const mergedChapter: Chapter = {
+      ...prev,
+      content: mergedContent,
+      originalEndIndex: mergedEnd,
+      // Any rich text representation is now stale; keep it unset so we don't accidentally show old content.
+      htmlContent: undefined,
+    };
+
+    const updatedChapters = [
+      ...chapters.slice(0, idx - 1),
+      mergedChapter,
+      ...chapters.slice(idx + 1),
+    ];
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, chapters: updatedChapters } : n
+    ));
+
+    setSelectedChapterId(mergedChapter.id);
+    setActiveTagIdInternal(null);
+    setGlobalFilterTagNameInternal(null);
+    setCurrentSelection(null);
+
+    try {
+      await novelsApi.updateFromCache(novel, {
+        chapters: updatedChapters,
+      });
+
+      console.log('[合并章节] 章节已合并并保存到数据库');
+    } catch (error) {
+      console.error('[合并章节] 保存到数据库失败:', error);
+      alert('合并章节失败，请重试');
+    }
+  };
+
+  const handleMergeChapterRange = async (chapterIds: string[]) => {
+    if (!novel.chapters) return;
+    const chapters = novel.chapters;
+    if (!chapterIds || chapterIds.length < 2) return;
+
+    const ids = chapterIds.filter(Boolean);
+    const idSet = new Set(ids);
+
+    const indices = ids
+      .map((id) => chapters.findIndex((c) => c.id === id))
+      .filter((i) => i >= 0)
+      .sort((a, b) => a - b);
+
+    if (indices.length < 2) return;
+
+    const startIdx = indices[0];
+    const endIdx = indices[indices.length - 1];
+
+    // Ensure all chapters in [startIdx, endIdx] are included in the selection (range merge safety).
+    for (let i = startIdx; i <= endIdx; i += 1) {
+      if (!idSet.has(chapters[i].id)) {
+        alert('合并失败：请选择一个连续范围的章节后再合并。');
+        return;
+      }
+    }
+
+    const top = chapters[startIdx];
+    const bottom = chapters[endIdx];
+
+    const fullText = novel.text || '';
+    const mergedStart = Math.max(0, top.originalStartIndex);
+    const mergedEnd = Math.max(mergedStart, bottom.originalEndIndex);
+    const mergedContent = fullText.substring(mergedStart, mergedEnd);
+
+    const mergedChapter: Chapter = {
+      ...top,
+      content: mergedContent,
+      originalEndIndex: mergedEnd,
+      // Any rich text representation is now stale; keep it unset so we don't accidentally show old content.
+      htmlContent: undefined,
+    };
+
+    const updatedChapters = [
+      ...chapters.slice(0, startIdx),
+      mergedChapter,
+      ...chapters.slice(endIdx + 1),
+    ];
+
+    setNovels(prevNovels => prevNovels.map(n =>
+      n.id === novel.id ? { ...n, chapters: updatedChapters } : n
+    ));
+
+    setSelectedChapterId(mergedChapter.id);
+    setActiveTagIdInternal(null);
+    setGlobalFilterTagNameInternal(null);
+    setCurrentSelection(null);
+
+    try {
+      await novelsApi.updateFromCache(novel, {
+        chapters: updatedChapters,
+      });
+
+      console.log('[合并章节] 范围合并已完成并保存到数据库');
+    } catch (error) {
+      console.error('[合并章节] 保存到数据库失败:', error);
+      alert('合并章节失败，请重试');
     }
   };
 
@@ -396,6 +772,7 @@ export const useNovelEditorState = ({
       parentId,
       userId: currentUser.id,
       novelId: novel.id, // 🆕 关联当前小说
+      placementType: activeTagPlacementType,
     };
 
     // 先更新本地状态,提供即时反馈
@@ -408,6 +785,7 @@ export const useNovelEditorState = ({
         color,
         parentId,
         novelId: novel.id, // 🆕 关联当前小说
+        placementType: activeTagPlacementType,
       });
 
       // 用后端返回的标签替换临时标签(ID可能不同)
@@ -421,6 +799,87 @@ export const useNovelEditorState = ({
       alert('创建标签失败,请稍后重试');
     }
   };
+
+  const handleImportTagTemplate = useCallback(async (template: TagTemplate) => {
+    if (!currentUser) return;
+    if (!template || !Array.isArray(template.tags)) return;
+
+    const rawDefs = template.tags.filter((def) => def?.name && def.name !== PENDING_ANNOTATION_TAG_NAME);
+    if (rawDefs.length === 0) {
+      alert('模板为空，无法导入');
+      return;
+    }
+
+    // Template format references parents by name, so we assume names are unique within a template.
+    const defMap = new Map<string, TagTemplateDefinition>();
+    for (const def of rawDefs) {
+      if (!defMap.has(def.name)) defMap.set(def.name, def);
+    }
+
+    const depthMemo = new Map<string, number>();
+    const visiting = new Set<string>();
+    const getDepth = (name: string): number => {
+      const cached = depthMemo.get(name);
+      if (cached !== undefined) return cached;
+      if (visiting.has(name)) return 0; // Cycle guard
+
+      visiting.add(name);
+      const def = defMap.get(name);
+      let depth = 0;
+      if (def?.parentName && defMap.has(def.parentName)) {
+        depth = getDepth(def.parentName) + 1;
+      }
+      visiting.delete(name);
+      depthMemo.set(name, depth);
+      return depth;
+    };
+
+    const orderedDefs = Array.from(defMap.values())
+      .map((def) => ({ def, depth: getDepth(def.name) }))
+      .sort((a, b) => a.depth - b.depth || a.def.name.localeCompare(b.def.name));
+
+    // Merge common prefixes: reuse existing tags with the same (parentId, name).
+    const existingByKey = new Map<string, Tag>();
+    for (const tag of currentUserTags) {
+      if (tag.name === PENDING_ANNOTATION_TAG_NAME) continue;
+      const key = `${tag.parentId ?? 'root'}||${tag.name}`;
+      if (!existingByKey.has(key)) existingByKey.set(key, tag);
+    }
+
+    const nameToPlacementId = new Map<string, string>();
+    const createdTags: Tag[] = [];
+
+    for (const { def } of orderedDefs) {
+      const parentId = def.parentName ? (nameToPlacementId.get(def.parentName) ?? null) : null;
+      const key = `${parentId ?? 'root'}||${def.name}`;
+      const existing = existingByKey.get(key);
+      if (existing) {
+        nameToPlacementId.set(def.name, existing.id);
+        continue;
+      }
+
+      try {
+        const created = await tagsApi.create({
+          name: def.name,
+          color: def.color,
+          parentId,
+          novelId: novel.id,
+          placementType: activeTagPlacementType,
+        });
+        createdTags.push(created);
+        existingByKey.set(key, created);
+        nameToPlacementId.set(def.name, created.id);
+      } catch (error) {
+        console.error('[模板导入] 创建标签失败:', def.name, error);
+        alert(`导入失败：创建标签 "${def.name}" 时出错`);
+        break;
+      }
+    }
+
+    if (createdTags.length > 0) {
+      setAllUserTags((prev) => [...prev, ...createdTags]);
+    }
+  }, [currentUser, currentUserTags, novel.id, setAllUserTags, activeTagPlacementType]);
 
   const handleUpdateTagParent = async (tagId: string, newParentId: string | null) => {
     const userTagsBeforeUpdate = allUserTags.filter(t => t.userId === currentUser.id);
@@ -534,7 +993,8 @@ export const useNovelEditorState = ({
   };
 
   const handleTextSelection = useCallback(() => {
-    if (editorMode !== 'annotation') {
+    // 支持标注模式和阅读模式的文本选择
+    if (!isSelectionEnabledMode) {
       setCurrentSelection(null);
       return;
     }
@@ -551,16 +1011,45 @@ export const useNovelEditorState = ({
 
       const contentDisplayElement = document.getElementById('content-display-area');
       if (contentDisplayElement && contentDisplayElement.contains(range.commonAncestorContainer)) {
-        
+
+        // ✅ 检查选区是否在 snippet 节点内
+        let snippetNode = range.commonAncestorContainer as HTMLElement;
+        // 向上查找 snippet container
+        while (snippetNode && snippetNode !== contentDisplayElement) {
+          if (snippetNode.nodeType === Node.ELEMENT_NODE && (snippetNode as HTMLElement).hasAttribute('data-annotation-id')) {
+            // 找到 snippet 节点，直接读取精确索引
+            const annotationId = (snippetNode as HTMLElement).getAttribute('data-annotation-id');
+            const startIndex = parseInt((snippetNode as HTMLElement).getAttribute('data-start-index') || '0', 10);
+            const endIndex = parseInt((snippetNode as HTMLElement).getAttribute('data-end-index') || '0', 10);
+
+            console.log('[handleTextSelection] 检测到 snippet 选区:', {
+              annotationId,
+              startIndex,
+              endIndex,
+              text: rawSelectedText
+            });
+
+            setCurrentSelection({
+              text: rawSelectedText,
+              startIndex,
+              endIndex,
+              annotationId: annotationId || undefined
+            });
+            return;
+          }
+          snippetNode = snippetNode.parentElement as HTMLElement;
+        }
+
+        // ✅ 不在 snippet 内，使用原有逻辑计算全文位置
         const preSelectionRange = document.createRange();
         preSelectionRange.selectNodeContents(contentDisplayElement);
         preSelectionRange.setEnd(range.startContainer, range.startOffset);
-        
+
         const rawRelativeStartIndex = preSelectionRange.toString().length;
-        
+
         const currentDisplayedText = currentChapterDetails ? currentChapterDetails.content : novel.text;
         const baseOffset = currentChapterDetails ? currentChapterDetails.originalStartIndex : 0;
-        
+
         if (rawRelativeStartIndex >= 0 && (rawRelativeStartIndex + rawSelectedText.length) <= currentDisplayedText.length) {
             const finalStartIndex = baseOffset + rawRelativeStartIndex;
             const finalEndIndex = finalStartIndex + rawSelectedText.length;
@@ -571,7 +1060,7 @@ export const useNovelEditorState = ({
         } else { setCurrentSelection(null); }
       } else { setCurrentSelection(null); }
     } else { setCurrentSelection(null); }
-  }, [novel.text, currentChapterDetails, editorMode]);
+  }, [novel.text, currentChapterDetails, isSelectionEnabledMode]);
 
   const _applyTagsToSegment = useCallback(async (selectionToAnnotate: SelectionDetails, tagIdsToApply: string[]) => {
     if (!currentUser) return;
@@ -604,6 +1093,7 @@ export const useNovelEditorState = ({
       const existingAnnotation = allUserAnnotations.find(
           ann => ann.novelId === novel.id &&
                  ann.userId === currentUser.id &&
+                 resolveAnnotationLayer(ann) === activeAnnotationLayer &&
                  ann.startIndex === finalStartIndex &&
                  ann.endIndex === finalEndIndex
       );
@@ -630,6 +1120,7 @@ export const useNovelEditorState = ({
           endIndex: finalEndIndex,
           novelId: novel.id,
           userId: currentUser.id,
+          annotationLayer: activeAnnotationLayer,
         });
       }
     }
@@ -651,15 +1142,28 @@ export const useNovelEditorState = ({
             // Create new annotations in backend and replace temporary IDs with real IDs
             const idMapping = new Map<string, string>(); // tempId -> realId
             for (const annotation of newAnnotations) {
-                const savedAnnotation = await annotationsApi.create({
-                    text: annotation.text,
-                    startIndex: annotation.startIndex,
-                    endIndex: annotation.endIndex,
-                    novelId: annotation.novelId,
-                    tagIds: annotation.tagIds,
-                    isPotentiallyMisaligned: annotation.isPotentiallyMisaligned,
-                });
-                idMapping.set(annotation.id, savedAnnotation.id);
+                // 🆕 Create promise and track it
+                const creationPromise = (async () => {
+                    const savedAnnotation = await annotationsApi.create({
+                        text: annotation.text,
+                        startIndex: annotation.startIndex,
+                        endIndex: annotation.endIndex,
+                        novelId: annotation.novelId,
+                        tagIds: annotation.tagIds,
+                        annotationLayer: annotation.annotationLayer,
+                        isPotentiallyMisaligned: annotation.isPotentiallyMisaligned,
+                    });
+                    // Clean up promise tracking when done
+                    pendingCreationPromises.current.delete(annotation.id);
+                    return savedAnnotation.id;
+                })();
+
+                // Store promise for this temporary ID
+                pendingCreationPromises.current.set(annotation.id, creationPromise);
+
+                // Wait for the real ID
+                const realId = await creationPromise;
+                idMapping.set(annotation.id, realId);
             }
 
             // Replace temporary IDs with real IDs from backend
@@ -685,12 +1189,21 @@ export const useNovelEditorState = ({
             alert('保存标注失败,请稍后重试');
         }
     }
-  }, [currentUser, currentUserTags, novel.id, allUserAnnotations, setAllUserAnnotations, pendingTag]);
+  }, [
+    currentUser,
+    currentUserTags,
+    novel.id,
+    allUserAnnotations,
+    setAllUserAnnotations,
+    pendingTag,
+    resolveAnnotationLayer,
+    activeAnnotationLayer,
+  ]);
   
   const applyTagToSelection = (tagId: string) => {
     setGlobalFilterTagNameInternal(null);
 
-    if (editorMode === 'read') {
+    if (isReadMode) {
         setActiveTagIdInternal(tagId);
         // 不再清空章节选择,保留用户的章节选择状态
         setCurrentSelection(null);
@@ -714,7 +1227,7 @@ export const useNovelEditorState = ({
 
   const selectTagForReadMode = (tagId: string | null) => {
     setGlobalFilterTagNameInternal(null);
-    if (editorMode !== 'read') return;
+    if (!isReadMode) return;
     setActiveTagIdInternal(tagId);
     // 不再清空章节选择,保留用户的章节选择状态
     setCurrentSelection(null);
@@ -745,6 +1258,200 @@ export const useNovelEditorState = ({
     }
   }, [currentUser, setAllUserAnnotations]);
 
+  // 🆕 批量删除选区内的所有标注
+  const handleDeleteAnnotationsInSelection = useCallback(async () => {
+    console.log('[删除标记] 函数被调用');
+    console.log('[删除标记] currentUser:', currentUser);
+    console.log('[删除标记] currentSelection:', currentSelection);
+
+    if (!currentUser?.id || !currentSelection || !currentSelection.text.trim()) {
+      console.log('[删除标记] 提前返回：缺少必要条件');
+      return;
+    }
+
+    const { startIndex, endIndex } = currentSelection;
+    console.log('[删除标记] 选区范围:', { startIndex, endIndex });
+
+    // 找出选区范围内的所有标注（完全包含或有交集的标注）
+    const annotationsToDelete = annotationsForCurrentNovel.filter(ann => {
+      // 标注与选区有交集：标注结束位置 > 选区开始 && 标注开始位置 < 选区结束
+      return ann.endIndex > startIndex && ann.startIndex < endIndex;
+    });
+
+    console.log('[删除标记] 找到的标注数量:', annotationsToDelete.length);
+    console.log('[删除标记] 要删除的标注:', annotationsToDelete);
+
+    if (annotationsToDelete.length === 0) {
+      console.log('[删除标记] 没有找到需要删除的标注');
+      return; // 无标注需要删除
+    }
+
+    // 🆕 Wait for any pending creation promises to complete and get real IDs
+    const annotationsWithRealIds = await Promise.all(
+      annotationsToDelete.map(async (ann) => {
+        const pendingPromise = pendingCreationPromises.current.get(ann.id);
+        if (pendingPromise) {
+          console.log(`[删除标记] 等待标注 ${ann.id} 的创建完成...`);
+          try {
+            const realId = await pendingPromise;
+            console.log(`[删除标记] 标注 ${ann.id} 的真实ID是 ${realId}`);
+            return { ...ann, id: realId };
+          } catch (error) {
+            console.error(`[删除标记] 标注 ${ann.id} 创建失败:`, error);
+            // If creation failed, just remove from local state, don't try to delete from backend
+            return null;
+          }
+        }
+        return ann;
+      })
+    );
+
+    // Filter out failed creations
+    const validAnnotationsToDelete = annotationsWithRealIds.filter((ann): ann is Annotation => ann !== null);
+
+    console.log('[删除标记] 实际要删除的标注（包含真实ID）:', validAnnotationsToDelete);
+
+    // 立即更新本地状态
+    const annotationIdsToDelete = new Set(validAnnotationsToDelete.map(ann => ann.id));
+    setAllUserAnnotations(prev =>
+      prev.filter(ann => !annotationIdsToDelete.has(ann.id) || ann.userId !== currentUser.id)
+    );
+    setCurrentSelection(null);
+
+    console.log('[删除标记] 本地状态已更新，开始后端删除');
+
+    // 后端批量删除
+    try {
+      await Promise.all(
+        validAnnotationsToDelete.map(ann => annotationsApi.delete(ann.id))
+      );
+      console.log('[删除标记] 后端删除成功');
+    } catch (error) {
+      console.error('[删除标记] 后端删除失败:', error);
+      alert('删除标注失败,请稍后重试');
+    }
+  }, [currentUser, currentSelection, annotationsForCurrentNovel, setAllUserAnnotations]);
+
+  // Batch create annotations for drag-and-drop tagging
+  const handleBatchCreateAnnotations = useCallback(async (
+    tagId: string,
+    textSegments: Array<{ text: string; startIndex: number; endIndex: number }>
+  ) => {
+    if (!currentUser?.id || textSegments.length === 0) return;
+
+    // ✅ 添加祖先标签
+    const allRelevantTagIds = new Set<string>();
+    allRelevantTagIds.add(tagId);
+    const ancestorTagIds = getAllAncestorTagIds(tagId, currentUserTags);
+    ancestorTagIds.forEach(id => allRelevantTagIds.add(id));
+    const finalTagIdsArray = Array.from(allRelevantTagIds);
+
+    // ? 同根替换：仅替换同一根标签体系下的旧标签，保留其他体系标签
+    const rootId = ancestorTagIds.length > 0 ? ancestorTagIds[ancestorTagIds.length - 1] : tagId;
+    const sameRootTagIds = new Set([rootId, ...getAllDescendantTagIds(rootId, currentUserTags)]);
+
+    const newAnnotations: Annotation[] = [];
+    const updatesToExistingAnnotations = new Map<string, string[]>();
+
+    for (const segment of textSegments) {
+      const existingAnnotation = allUserAnnotations.find(
+        ann => ann.novelId === novel.id &&
+               ann.userId === currentUser.id &&
+               resolveAnnotationLayer(ann) === activeAnnotationLayer &&
+               ann.startIndex === segment.startIndex &&
+               ann.endIndex === segment.endIndex
+      );
+
+      if (existingAnnotation) {
+        // ✅ 智能替换逻辑：如果已有标注包含"待标注"标签，且当前不是在应用"待标注"，则移除"待标注"
+        const hasPendingTag = pendingTag ? existingAnnotation.tagIds.includes(pendingTag.id) : false;
+        const isApplyingPendingTag = pendingTag ? tagId === pendingTag.id : false;
+
+        let finalExistingTags = [...existingAnnotation.tagIds];
+
+        if (hasPendingTag && !isApplyingPendingTag) {
+          // 移除待标注标签
+          finalExistingTags = finalExistingTags.filter(id => id !== pendingTag!.id);
+        }
+
+        // ? 同根替换（不对“待标注”生效，避免误删其他标签）
+        if (!isApplyingPendingTag) {
+          finalExistingTags = finalExistingTags.filter(id => !sameRootTagIds.has(id));
+        }
+
+        // 合并新标签（替换后再追加新标签+祖先）
+        const mergedTagIds = Array.from(new Set([...finalExistingTags, ...finalTagIdsArray]));
+        updatesToExistingAnnotations.set(existingAnnotation.id, mergedTagIds);
+      } else {
+        // Create new annotation
+        newAnnotations.push({
+          id: generateId(),
+          tagIds: finalTagIdsArray,
+          text: segment.text,
+          startIndex: segment.startIndex,
+          endIndex: segment.endIndex,
+          novelId: novel.id,
+          userId: currentUser.id,
+          annotationLayer: activeAnnotationLayer,
+        });
+      }
+    }
+
+    // Update local state first
+    setAllUserAnnotations(prevAnnotations => {
+      const updatedAnnotations = prevAnnotations.map(ann => {
+        if (updatesToExistingAnnotations.has(ann.id)) {
+          return { ...ann, tagIds: updatesToExistingAnnotations.get(ann.id)! };
+        }
+        return ann;
+      });
+      return [...updatedAnnotations, ...newAnnotations];
+    });
+
+    // Then persist to backend
+    try {
+      // Create new annotations and replace temporary IDs
+      const idMapping = new Map<string, string>();
+      for (const annotation of newAnnotations) {
+        const savedAnnotation = await annotationsApi.create({
+          text: annotation.text,
+          startIndex: annotation.startIndex,
+          endIndex: annotation.endIndex,
+          novelId: annotation.novelId,
+          tagIds: annotation.tagIds,
+          annotationLayer: annotation.annotationLayer,
+        });
+        idMapping.set(annotation.id, savedAnnotation.id);
+      }
+
+      // Replace temporary IDs with real IDs
+      if (idMapping.size > 0) {
+        setAllUserAnnotations(prevAnnotations =>
+          prevAnnotations.map(ann =>
+            idMapping.has(ann.id) ? { ...ann, id: idMapping.get(ann.id)! } : ann
+          )
+        );
+      }
+
+      // Update existing annotations
+      for (const [annotationId, newTagIds] of updatesToExistingAnnotations.entries()) {
+        await annotationsApi.update(annotationId, { tagIds: newTagIds });
+      }
+    } catch (error) {
+      console.error('Failed to batch create annotations:', error);
+      alert('批量创建标注失败，请稍后重试');
+    }
+  }, [
+    currentUser,
+    novel.id,
+    allUserAnnotations,
+    setAllUserAnnotations,
+    currentUserTags,
+    pendingTag,
+    resolveAnnotationLayer,
+    activeAnnotationLayer,
+  ]);
+
   // --- Storyline Handlers ---
 
   const handleSelectStoryline = (storylineId: string | null) => {
@@ -772,6 +1479,99 @@ export const useNovelEditorState = ({
     }
   };
 
+  const handleBatchAddStorylines = async (items: Array<{ path: string; color?: string }>) => {
+    const currentStorylines = [...(novel.storylines || [])];
+    const normalizedItems = items
+      .map((item) => ({
+        path: (item.path || '')
+          .split('/')
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join('/'),
+        color: (item.color || '').trim(),
+      }))
+      .filter((item) => item.path.length > 0);
+
+    if (normalizedItems.length === 0) {
+      return { createdCount: 0, skippedCount: 0 };
+    }
+
+    const makeKey = (parentId: string | null, name: string) => `${parentId ?? 'root'}::${name.trim().toLowerCase()}`;
+    const isValidHexColor = (color: string): boolean => /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color);
+
+    const existingByKey = new Map<string, Storyline>();
+    currentStorylines.forEach((storyline) => {
+      existingByKey.set(makeKey(storyline.parentId, storyline.name), storyline);
+    });
+
+    const updatedStorylines = [...currentStorylines];
+    let createdCount = 0;
+    let skippedCount = 0;
+
+    for (const item of normalizedItems) {
+      const segments = item.path.split('/').map((segment) => segment.trim()).filter(Boolean);
+      if (segments.length === 0) {
+        skippedCount += 1;
+        continue;
+      }
+
+      let currentParentId: string | null = null;
+      let createdInThisPath = false;
+
+      for (let i = 0; i < segments.length; i += 1) {
+        const segment = segments[i];
+        const key = makeKey(currentParentId, segment);
+        const existing = existingByKey.get(key);
+        if (existing) {
+          currentParentId = existing.id;
+          continue;
+        }
+
+        const isLeaf = i === segments.length - 1;
+        const storylineColor = isLeaf && isValidHexColor(item.color) ? item.color : getNextColor();
+        const newStoryline: Storyline = {
+          id: generateId(),
+          name: segment,
+          color: storylineColor,
+          parentId: currentParentId,
+        };
+
+        updatedStorylines.push(newStoryline);
+        existingByKey.set(key, newStoryline);
+        currentParentId = newStoryline.id;
+        createdInThisPath = true;
+        createdCount += 1;
+      }
+
+      if (!createdInThisPath) {
+        skippedCount += 1;
+      }
+    }
+
+    if (createdCount === 0) {
+      return { createdCount, skippedCount };
+    }
+
+    // 先更新本地状态
+    setNovels((novels) =>
+      novels.map((n) =>
+        n.id === novel.id
+          ? { ...n, storylines: updatedStorylines }
+          : n
+      )
+    );
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { storylines: updatedStorylines });
+    } catch (error) {
+      console.error('批量保存剧情线到后端失败:', error);
+      alert('批量导入剧情线失败,请稍后重试');
+    }
+
+    return { createdCount, skippedCount };
+  };
+
   const handleUpdateStoryline = async (storylineId: string, updates: Partial<Storyline>) => {
     const updatedStorylines = (novel.storylines || []).map(s =>
       s.id === storylineId ? { ...s, ...updates } : s
@@ -790,6 +1590,81 @@ export const useNovelEditorState = ({
     } catch (error) {
       console.error('更新剧情线到后端失败:', error);
       alert('更新剧情线失败,请稍后重试');
+    }
+  };
+
+  const getAllDescendantStorylineIds = (storylineId: string, allStorylines: Storyline[]): string[] => {
+    const descendants: string[] = [];
+    const queue: string[] = [storylineId];
+    const visited = new Set<string>([storylineId]);
+
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      const children = allStorylines.filter((s) => s.parentId === currentId);
+      for (const child of children) {
+        if (!visited.has(child.id)) {
+          visited.add(child.id);
+          descendants.push(child.id);
+          queue.push(child.id);
+        }
+      }
+    }
+
+    return descendants;
+  };
+
+  const handleReorderStoryline = async (
+    draggedId: string,
+    targetId: string,
+    position: 'before' | 'after'
+  ) => {
+    if (draggedId === targetId) return;
+
+    const currentStorylines = [...(novel.storylines || [])];
+    const dragged = currentStorylines.find((s) => s.id === draggedId);
+    const target = currentStorylines.find((s) => s.id === targetId);
+    if (!dragged || !target) return;
+
+    const descendantIds = new Set(getAllDescendantStorylineIds(draggedId, currentStorylines));
+    const nextParentId = target.parentId;
+    if (
+      nextParentId === draggedId ||
+      (nextParentId !== null && descendantIds.has(nextParentId))
+    ) {
+      alert('不能将故事线插入到其自身子级结构内。');
+      return;
+    }
+
+    const withoutDragged = currentStorylines.filter((s) => s.id !== draggedId);
+    const targetIndex = withoutDragged.findIndex((s) => s.id === targetId);
+    if (targetIndex < 0) return;
+
+    const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    const movedStoryline: Storyline =
+      dragged.parentId === nextParentId
+        ? dragged
+        : { ...dragged, parentId: nextParentId };
+    const updatedStorylines = [
+      ...withoutDragged.slice(0, insertIndex),
+      movedStoryline,
+      ...withoutDragged.slice(insertIndex),
+    ];
+
+    // 先更新本地状态
+    setNovels((novels) =>
+      novels.map((n) =>
+        n.id === novel.id
+          ? { ...n, storylines: updatedStorylines }
+          : n
+      )
+    );
+
+    // 然后保存到后端
+    try {
+      await novelsApi.update(novel.id, { storylines: updatedStorylines });
+    } catch (error) {
+      console.error('调整剧情线顺序到后端失败:', error);
+      alert('调整剧情线顺序失败,请稍后重试');
     }
   };
 
@@ -899,6 +1774,10 @@ export const useNovelEditorState = ({
     [activeTagId, getTagById]
   );
 
+  const toggleIncludeChildTagsInReadMode = useCallback(() => {
+    setIncludeChildTagsInReadMode(prev => !prev);
+  }, []);
+
   const annotationsToDisplayOrFilter = useMemo(() => {
     if (globalFilterTagName) {
       const lowerGlobalFilterTagName = globalFilterTagName.toLowerCase();
@@ -916,13 +1795,20 @@ export const useNovelEditorState = ({
     if (!activeTagDetails) { 
         return annotationsForCurrentNovel;
     }
-    
-    const relevantTagIdsSet = new Set([
-      activeTagDetails.id,
-      ...getAllDescendantTagIds(activeTagDetails.id, currentUserTags)
-    ]);
+
+    const descendantIds = getAllDescendantTagIds(activeTagDetails.id, currentUserTags);
+    const descendantIdSet = new Set(descendantIds);
+
+    if (isReadMode && !includeChildTagsInReadMode) {
+      return annotationsForCurrentNovel.filter(ann => (
+        ann.tagIds.includes(activeTagDetails.id) &&
+        !ann.tagIds.some(tid => descendantIdSet.has(tid))
+      ));
+    }
+
+    const relevantTagIdsSet = new Set([activeTagDetails.id, ...descendantIds]);
     return annotationsForCurrentNovel.filter(ann => ann.tagIds.some(tid => relevantTagIdsSet.has(tid)));
-  }, [globalFilterTagName, activeTagDetails, annotationsForCurrentNovel, currentUserTags]);
+  }, [globalFilterTagName, activeTagDetails, annotationsForCurrentNovel, currentUserTags, isReadMode, includeChildTagsInReadMode]);
 
 
   return {
@@ -935,10 +1821,16 @@ export const useNovelEditorState = ({
     getTagById,
     handleNovelTextChange,
     handleChapterTextChange,
+    handleSplitChapterAtCursor,
     handleDeleteChapter,
     handleRenameChapter,
+    handleCreateChapter,
+    handleMergeChapterWithPrevious,
+    handleMergeChapterRange,
+    handleUpdateChapterLevel,
     handleSelectChapter,
     handleAddTag,
+    handleImportTagTemplate,
     handleUpdateTagParent,
     handleUpdateTagColor,
     handleTextSelection,
@@ -948,15 +1840,21 @@ export const useNovelEditorState = ({
     annotationsToDisplayOrFilter,
     globalFilterTagName,
     handleTagGlobalSearch,
+    includeChildTagsInReadMode,
+    toggleIncludeChildTagsInReadMode,
     handleDeleteAnnotation,
+    handleDeleteAnnotationsInSelection,
     handleCreatePendingAnnotation,
+    handleBatchCreateAnnotations,
     // Storyline exports
     activeStorylineId,
     scrollToAnchorId,
     setScrollToAnchorId,
     handleSelectStoryline,
     handleAddStoryline,
+    handleBatchAddStorylines,
     handleUpdateStoryline,
+    handleReorderStoryline,
     handleDeleteStoryline,
     handleAddPlotAnchor,
     handleUpdatePlotAnchor,
