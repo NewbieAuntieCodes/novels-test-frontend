@@ -16,7 +16,7 @@ export interface TagPlacement {
   parentPlacementId: string | null;
   novelId: string | null;
   userId: string;
-  placementType?: 'tag' | 'term';
+  placementType?: 'tag' | 'term' | 'rangeTag';
   displayOrder: number;
   createdAt: string;
   tag: {
@@ -33,7 +33,7 @@ interface TagPlacementCreateRequest {
   parentPlacementId?: string | null;
   novelId?: string | null;
   displayOrder?: number;
-  placementType?: 'tag' | 'term';
+  placementType?: 'tag' | 'term' | 'rangeTag';
 }
 
 interface TagWithPlacementCreateRequest {
@@ -42,7 +42,7 @@ interface TagWithPlacementCreateRequest {
   parentPlacementId?: string | null;
   novelId?: string | null;
   displayOrder?: number;
-  placementType?: 'tag' | 'term';
+  placementType?: 'tag' | 'term' | 'rangeTag';
 }
 
 const requireUserId = (): string => {
@@ -64,7 +64,7 @@ const assemblePlacement = (placement: TagPlacement, tagName: string, tagColor: s
 
 export const tagPlacementsApi = {
   // 获取所有标签挂载（可按小说ID筛选，支持 novelId='global' 只获取全局标签）
-  async getAll(params?: { novelId?: string | 'global'; placementType?: 'tag' | 'term' }): Promise<TagPlacement[]> {
+  async getAll(params?: { novelId?: string | 'global'; placementType?: 'tag' | 'term' | 'rangeTag' }): Promise<TagPlacement[]> {
     const userId = requireUserId();
     const definitions = await listTagDefinitions(userId);
     const novelIdFilter = params?.novelId === 'global' ? null : params?.novelId;
@@ -143,7 +143,7 @@ export const tagPlacementsApi = {
   // 更新标签挂载
   async update(
     id: string,
-    data: { parentPlacementId?: string | null; displayOrder?: number; placementType?: 'tag' | 'term' }
+    data: { parentPlacementId?: string | null; displayOrder?: number; placementType?: 'tag' | 'term' | 'rangeTag' }
   ): Promise<TagPlacement> {
     const userId = requireUserId();
     const placements = await listTagPlacements(userId);
@@ -185,7 +185,7 @@ export const tagPlacementsApi = {
   },
 
   // 获取标签的所有子孙挂载ID
-  async getDescendants(placementId: string, params?: { placementType?: 'tag' | 'term' }): Promise<{ placementId: string; descendantIds: string[] }> {
+  async getDescendants(placementId: string, params?: { placementType?: 'tag' | 'term' | 'rangeTag' }): Promise<{ placementId: string; descendantIds: string[] }> {
     const userId = requireUserId();
     const typeFilter = params?.placementType ?? 'tag';
     const placements = (await listTagPlacements(userId)).filter(p => (p.placementType ?? 'tag') === typeFilter);

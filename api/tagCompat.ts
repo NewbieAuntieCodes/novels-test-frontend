@@ -27,27 +27,33 @@ function placementToTag(placement: TagPlacement): Tag {
  */
 export const tagCompatApi = {
   // 获取所有标签（按小说ID筛选，返回该小说的所有挂载）
-  async getAll(params?: { novelId?: string }): Promise<Tag[]> {
+  async getAll(params?: { novelId?: string | 'global'; placementType?: 'tag' | 'term' | 'rangeTag' }): Promise<Tag[]> {
     const placements = await tagPlacementsApi.getAll(params);
     return placements.map(placementToTag);
   },
 
   // 创建标签（同时创建定义和挂载）
-  async create(data: { name: string; color: string; parentId?: string | null; novelId?: string | null }): Promise<Tag> {
+  async create(data: { name: string; color: string; parentId?: string | null; novelId?: string | null; placementType?: 'tag' | 'term' | 'rangeTag' }): Promise<Tag> {
     const placement = await tagPlacementsApi.createWithTag({
       name: data.name,
       color: data.color,
       parentPlacementId: data.parentId,
       novelId: data.novelId,
+      placementType: data.placementType ?? 'tag',
     });
     return placementToTag(placement);
   },
 
   // 更新标签
   async update(id: string, data: { name?: string; color?: string; parentId?: string | null }): Promise<Tag> {
-    // id 是 placementId
-    const placement = await tagPlacementsApi.getAll({});
-    const currentPlacement = placement.find(p => p.id === id);
+    // id 是 placementId。这里不能只查默认 'tag'，否则 rangeTag/term 会误判不存在。
+    const [tagPlacements, rangeTagPlacements, termPlacements] = await Promise.all([
+      tagPlacementsApi.getAll({ placementType: 'tag' }),
+      tagPlacementsApi.getAll({ placementType: 'rangeTag' }),
+      tagPlacementsApi.getAll({ placementType: 'term' }),
+    ]);
+    const allPlacements = [...tagPlacements, ...rangeTagPlacements, ...termPlacements];
+    const currentPlacement = allPlacements.find(p => p.id === id);
 
     if (!currentPlacement) {
       throw new Error('标签挂载不存在');
@@ -69,8 +75,10 @@ export const tagCompatApi = {
       return placementToTag(updatedPlacement);
     }
 
-    // 重新获取更新后的数据
-    const updatedPlacements = await tagPlacementsApi.getAll({});
+    // 重新获取更新后的数据（使用原 placementType，避免再次默认回落到 'tag'）
+    const updatedPlacements = await tagPlacementsApi.getAll({
+      placementType: (currentPlacement.placementType ?? 'tag') as 'tag' | 'term' | 'rangeTag',
+    });
     const updated = updatedPlacements.find(p => p.id === id);
     if (!updated) {
       throw new Error('更新后未找到标签');

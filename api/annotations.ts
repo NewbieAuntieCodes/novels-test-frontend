@@ -1,5 +1,5 @@
 // 标注相关（本地 IndexedDB）
-import type { Annotation } from '../types';
+import type { Annotation, AnnotationLayer } from '../types';
 import { TokenManager } from './config';
 import { generateId } from '../utils';
 import {
@@ -16,8 +16,14 @@ interface AnnotationCreateRequest {
   endIndex: number;
   novelId: string;
   tagIds: string[];
+  annotationLayer?: AnnotationLayer;
   isPotentiallyMisaligned?: boolean;
 }
+
+const normalizeAnnotation = (annotation: Annotation): Annotation => ({
+  ...annotation,
+  annotationLayer: annotation.annotationLayer ?? 'fine',
+});
 
 const requireUserId = (): string => {
   const userId = TokenManager.getUserId();
@@ -38,7 +44,7 @@ export const annotationsApi = {
     if (params?.tagId) {
       annotations = annotations.filter(a => a.tagIds?.includes(params.tagId!));
     }
-    return annotations;
+    return annotations.map(normalizeAnnotation);
   },
 
   // 全局搜索标注
@@ -46,7 +52,9 @@ export const annotationsApi = {
     const userId = requireUserId();
     const annotations = await listAnnotations(userId);
     const normalizedKeyword = keyword.trim().toLowerCase();
-    return annotations.filter(ann =>
+    return annotations
+      .map(normalizeAnnotation)
+      .filter(ann =>
       (ann.text || '').toLowerCase().includes(normalizedKeyword)
     );
   },
@@ -58,6 +66,7 @@ export const annotationsApi = {
       ...data,
       id: generateId(),
       userId,
+      annotationLayer: data.annotationLayer ?? 'fine',
     };
     await saveAnnotation(annotation);
     markNovelModified(userId, annotation.novelId);
@@ -70,7 +79,7 @@ export const annotationsApi = {
     const annotations = await listAnnotations(userId);
     const existing = annotations.find(a => a.id === id);
     if (!existing) throw new Error('标注不存在');
-    const updated = { ...existing, ...data };
+    const updated = normalizeAnnotation({ ...existing, ...data });
     await saveAnnotation(updated);
     markNovelModified(userId, updated.novelId);
     return updated;

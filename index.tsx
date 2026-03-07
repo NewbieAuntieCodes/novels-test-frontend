@@ -62,6 +62,7 @@ const App: React.FC = () => {
   // 🆕 使用 LRU 缓存管理小说数据（最多缓存 5 本，5分钟TTL）
   const novelDataCache = useRef<LRUCache<string, {
     tags: Tag[];
+    rangeTags: Tag[];
     terms: Tag[];
     annotations: Annotation[];
     timestamp: number;

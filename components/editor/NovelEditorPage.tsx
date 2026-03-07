@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, CSSProperties } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import styled from '@emotion/styled';
 import type { Novel, Tag, Annotation, User, TagTemplate } from "../../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, panelStyles as basePanelStyles } from '../../styles';
@@ -14,6 +14,7 @@ import NoteWorkspaceContentPanel from './NoteWorkspaceContentPanel';
 import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
 import RightSidebarPanel from './RightSidebarPanel';
+import WritingModeWorkspace from './writing/WritingModeWorkspace';
 import { novelsApi, annotationsApi } from '../../api';
 import { tagCompatApi as tagsApi } from '../../api/tagCompat';
 import { termCompatApi } from '../../api/termCompat';
@@ -36,6 +37,7 @@ interface NovelEditorPageProps {
   onDeleteTag: (tagId: string) => void;
   novelDataCache?: React.MutableRefObject<LRUCache<string, {
     tags: Tag[];
+    rangeTags: Tag[];
     terms: Tag[];
     annotations: Annotation[];
     timestamp: number;
@@ -46,8 +48,13 @@ interface NovelEditorPageProps {
   }>>;
 }
 
-export type EditorMode = 'edit' | 'annotation' | 'read' | 'storyline'; 
+export type EditorMode = 'edit' | 'annotation' | 'plotRange' | 'read' | 'plotRangeRead' | 'storyline' | 'writing';
 type WorkspaceMode = 'tag' | 'note';
+type StorylineDragState = {
+  draggedId: string | null;
+  dragOverId: string | null;
+  isDraggingOverList: boolean;
+};
 
 const EDITOR_LOCATE_STORAGE_KEY = 'novelEditorLocateRequest';
 const EDITOR_WORKSPACE_STORAGE_KEY = 'novelEditorWorkspaceMode';
@@ -197,6 +204,62 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
   const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
   const [locateRequest, setLocateRequest] = useState<{ chapterId: string; absoluteIndex: number } | null>(null);
+  const [collapsedStorylineIds, setCollapsedStorylineIds] = useState<Set<string>>(new Set());
+  const [storylineDragState, setStorylineDragState] = useState<StorylineDragState>({
+    draggedId: null,
+    dragOverId: null,
+    isDraggingOverList: false,
+  });
+  const tagEditorBehaviorMode: EditorMode =
+    tagEditorMode === 'plotRange'
+      ? 'annotation'
+      : (tagEditorMode === 'plotRangeRead' ? 'read' : tagEditorMode);
+
+  const handleToggleStorylineCollapsed = (storylineId: string) => {
+    setCollapsedStorylineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(storylineId)) {
+        next.delete(storylineId);
+      } else {
+        next.add(storylineId);
+      }
+      return next;
+    });
+  };
+
+  const handleStorylineDragStateChange = (state: StorylineDragState) => {
+    setStorylineDragState(state);
+  };
+
+  const storylineIdSet = useMemo(
+    () => new Set((novel.storylines || []).map((storyline) => storyline.id)),
+    [novel.storylines]
+  );
+
+  useEffect(() => {
+    setCollapsedStorylineIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (storylineIdSet.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [storylineIdSet]);
+
+  useEffect(() => {
+    if (!storylineDragState.draggedId && !storylineDragState.dragOverId) return;
+    if (
+      (storylineDragState.draggedId && !storylineIdSet.has(storylineDragState.draggedId)) ||
+      (storylineDragState.dragOverId && !storylineIdSet.has(storylineDragState.dragOverId))
+    ) {
+      setStorylineDragState({ draggedId: null, dragOverId: null, isDraggingOverList: false });
+    }
+  }, [storylineDragState, storylineIdSet]);
 
   useEffect(() => {
     try {
@@ -323,10 +386,12 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             setAllUserTags(prev => {
               const globalTags = prev.filter(t => t.novelId === null);
               const currentNovelTags = prev.filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'tag');
+              const currentNovelRangeTags = prev.filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'rangeTag');
               const currentNovelTerms = prev.filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'term');
 
               const tagsToRestore: Tag[] = [];
               if (currentNovelTags.length === 0) tagsToRestore.push(...cached.tags);
+              if (currentNovelRangeTags.length === 0) tagsToRestore.push(...(cached.rangeTags || []));
               if (currentNovelTerms.length === 0) tagsToRestore.push(...(cached.terms || []));
 
               if (tagsToRestore.length === 0) return prev;
@@ -349,7 +414,8 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
 
         // ✅ 检查本地状态缓存（同一会话内）
         const currentNovelTags = allUserTags.filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'tag');
-        if (loadedAnnotationsForNovelIds.has(novel.id) && currentNovelTags.length > 0) {
+        const currentNovelRangeTags = allUserTags.filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'rangeTag');
+        if (loadedAnnotationsForNovelIds.has(novel.id) && (currentNovelTags.length > 0 || currentNovelRangeTags.length > 0)) {
           console.log('[NovelEditor] ✅ 该小说数据已在本地缓存，跳过加载');
           return;
         }
@@ -375,41 +441,61 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
         // 2. ⚡ 并行加载该小说的标签 + 全局标签（避免拉取所有标签）
         console.log('[NovelEditor] 加载标签...');
         const t2 = performance.now();
-        let [novelTags, globalTags, novelTerms] = await Promise.all([
-          tagsApi.getAll({ novelId: novel.id }),    // 该小说的标签
-          tagsApi.getAll({ novelId: 'global' }),     // 只加载全局标签
+        let [novelTags, novelRangeTags, globalTags, novelTerms] = await Promise.all([
+          tagsApi.getAll({ novelId: novel.id, placementType: 'tag' }), // 该小说的细粒度标签
+          tagsApi.getAll({ novelId: novel.id, placementType: 'rangeTag' }), // 该小说的剧情范围标签
+          tagsApi.getAll({ novelId: 'global', placementType: 'tag' }), // 只加载全局标签
           termCompatApi.getAll({ novelId: novel.id }), // 该小说的词条
         ]);
         const t2_1 = performance.now();
         console.log('[NovelEditor] API 调用完成，耗时:', (t2_1 - t2).toFixed(2), 'ms');
-        console.log('[NovelEditor] 返回的标签数量 - 小说:', novelTags.length, '全局:', globalTags.length, '词条:', novelTerms.length);
+        console.log(
+          '[NovelEditor] 返回的标签数量 - 细粒度:',
+          novelTags.length,
+          '剧情范围:',
+          novelRangeTags.length,
+          '全局:',
+          globalTags.length,
+          '词条:',
+          novelTerms.length
+        );
 
-        // 🆕 确保当前小说有「待标注」标签
+        // 🆕 确保当前小说的细粒度/剧情范围标签树都包含「待标注」标签
         const PENDING_TAG_NAME = '待标注';
         const PENDING_TAG_COLOR = '#cccccc';
-        let finalNovelTags = [...novelTags];
+        const ensurePendingTag = async (
+          sourceTags: Tag[],
+          placementType: 'tag' | 'rangeTag',
+          label: string
+        ): Promise<Tag[]> => {
+          const finalTags = [...sourceTags];
+          const hasPendingTag = sourceTags.some(t => t.name === PENDING_TAG_NAME);
+          if (hasPendingTag) return finalTags;
 
-        const hasPendingTag = novelTags.some(t => t.name === PENDING_TAG_NAME);
-        if (!hasPendingTag) {
-          console.log('[NovelEditor] 为小说创建「待标注」标签...');
+          console.log(`[NovelEditor] 为小说创建「待标注」标签（${label}）...`);
           try {
             const newPendingTag = await tagsApi.create({
               name: PENDING_TAG_NAME,
               color: PENDING_TAG_COLOR,
               parentId: null,
-              novelId: novel.id, // 小说级别的标签
+              novelId: novel.id,
+              placementType,
             });
-            finalNovelTags.push(newPendingTag);
-            console.log('[NovelEditor] 「待标注」标签创建成功');
+            finalTags.push(newPendingTag);
+            console.log(`[NovelEditor] 「待标注」标签创建成功（${label}）`);
           } catch (error) {
-            console.error('创建待标注标签失败:', error);
+            console.error(`创建待标注标签失败（${label}）:`, error);
           }
-        }
+          return finalTags;
+        };
+
+        const finalNovelTags = await ensurePendingTag(novelTags, 'tag', '细粒度');
+        const finalNovelRangeTags = await ensurePendingTag(novelRangeTags, 'rangeTag', '剧情范围');
 
         // 🔧 只保留当前小说的标签和全局标签，删除其他小说的标签
         const t2_3 = performance.now();
         const allTagsMap = new Map<string, Tag>();
-        [...globalTags, ...finalNovelTags, ...novelTerms].forEach(tag => {
+        [...globalTags, ...finalNovelTags, ...finalNovelRangeTags, ...novelTerms].forEach(tag => {
           allTagsMap.set(tag.id, tag);
         });
         console.log('[NovelEditor] 构建标签Map完成，耗时:', (performance.now() - t2_3).toFixed(2), 'ms', '总数:', allTagsMap.size);
@@ -430,6 +516,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           endIndex: ann.endIndex,
           novelId: ann.novelId,
           userId: ann.userId,
+          annotationLayer: ann.annotationLayer ?? 'fine',
           isPotentiallyMisaligned: ann.isPotentiallyMisaligned,
         }));
 
@@ -449,6 +536,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
         if (novelDataCache) {
           novelDataCache.current.set(novel.id, {
             tags: Array.from(allTagsMap.values()).filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'tag'),
+            rangeTags: Array.from(allTagsMap.values()).filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'rangeTag'),
             terms: Array.from(allTagsMap.values()).filter(t => t.novelId === novel.id && (t.placementType ?? 'tag') === 'term'),
             annotations: formattedAnnotations,
             timestamp: Date.now(),
@@ -483,7 +571,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
     setAllUserTags,
     setAllUserAnnotations,
     currentUser,
-    editorMode: tagEditorMode, 
+    editorMode: tagEditorMode,
   });
 
   const noteState = useNoteWorkspaceState({
@@ -513,7 +601,10 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const setHoveredResizer = workspaceMode === 'note' ? noteWorkspaceResizer.setHoveredResizer : tagWorkspaceResizer.setHoveredResizer;
 
   const contentPanelViewMode =
-    tagEditorMode === 'read' && (editorState.activeTagId || editorState.globalFilterTagName) ? 'snippet' : 'full';
+    (tagEditorMode === 'read' || tagEditorMode === 'plotRangeRead') &&
+    (editorState.activeTagId || editorState.globalFilterTagName)
+      ? 'snippet'
+      : 'full';
 
   // 加载中状态
   if (isLoadingNovelData) {
@@ -590,9 +681,27 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
                 onClick={() => setTagEditorMode('read')}
                 role="radio"
                 aria-checked={tagEditorMode === 'read'}
-                title="阅读模式：用于查阅小说内容、已标注的片段。"
+                title="标注阅读模式：用于查阅细粒度标注片段。"
               >
-                阅读模式
+                标注阅读
+              </ModeToggleButton>
+              <ModeToggleButton
+                isActive={tagEditorMode === 'plotRange'}
+                onClick={() => setTagEditorMode('plotRange')}
+                role="radio"
+                aria-checked={tagEditorMode === 'plotRange'}
+                title={`剧情范围模式：用于按较大剧情范围进行${tagEntityLabel}标注。`}
+              >
+                剧情范围模式
+              </ModeToggleButton>
+              <ModeToggleButton
+                isActive={tagEditorMode === 'plotRangeRead'}
+                onClick={() => setTagEditorMode('plotRangeRead')}
+                role="radio"
+                aria-checked={tagEditorMode === 'plotRangeRead'}
+                title="剧情范围阅读模式：用于查阅剧情范围标注片段。"
+              >
+                范围阅读
               </ModeToggleButton>
               <ModeToggleButton
                 isActive={tagEditorMode === 'storyline'}
@@ -602,6 +711,15 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
                 title="剧情线模式：梳理剧情脉络，追踪故事线发展。"
               >
                 剧情线模式
+              </ModeToggleButton>
+              <ModeToggleButton
+                isActive={tagEditorMode === 'writing'}
+                onClick={() => setTagEditorMode('writing')}
+                role="radio"
+                aria-checked={tagEditorMode === 'writing'}
+                title="写作模式：管理对标小说、策划全局与章节并推进正文写作。"
+              >
+                写作模式
               </ModeToggleButton>
             </>
           ) : (
@@ -691,6 +809,11 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
               onSaveChapterHtml={noteState.handleSaveChapterHtml}
             />
           </>
+        ) : tagEditorMode === 'writing' ? (
+          <WritingModeWorkspace
+            novel={novel}
+            setNovels={setNovels}
+          />
         ) : (
           <>
             <ChapterListPanel style={{ flexBasis: `${panelWidths[0]}%` }}>
@@ -723,9 +846,14 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             storylines={novel.storylines || []}
             activeStorylineId={editorState.activeStorylineId}
             onAddStoryline={editorState.handleAddStoryline}
+            onBatchAddStorylines={editorState.handleBatchAddStorylines}
             onUpdateStoryline={editorState.handleUpdateStoryline}
+            onReorderStoryline={editorState.handleReorderStoryline}
             onDeleteStoryline={editorState.handleDeleteStoryline}
             onSelectStoryline={editorState.handleSelectStoryline}
+            collapsedStorylineIds={collapsedStorylineIds}
+            onToggleStorylineCollapsed={handleToggleStorylineCollapsed}
+            onDragStateChange={handleStorylineDragStateChange}
           />
         ) : (
           <TagPanel
@@ -743,7 +871,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             chapters={novel.chapters || []}
             selectedChapterId={editorState.selectedChapterId}
             onSelectChapter={editorState.handleSelectChapter}
-            editorMode={tagEditorMode}
+            editorMode={tagEditorBehaviorMode}
             onTagGlobalSearch={editorState.handleTagGlobalSearch}
             currentSelection={editorState.currentSelection}
             onCreatePendingAnnotation={editorState.handleCreatePendingAnnotation}
@@ -771,6 +899,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           novel={novel}
           onNovelTextChange={editorState.handleNovelTextChange}
           onChapterTextChange={editorState.handleChapterTextChange}
+          onSplitChapterAtCursor={editorState.handleSplitChapterAtCursor}
           onTextSelection={editorState.handleTextSelection}
           annotations={editorState.annotationsForCurrentNovel}
           getTagById={editorState.getTagById}
@@ -796,6 +925,9 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           onLocateRequestHandled={() => setLocateRequest(null)}
           includeChildTagsInReadMode={editorState.includeChildTagsInReadMode}
           onToggleIncludeChildTagsInReadMode={editorState.toggleIncludeChildTagsInReadMode}
+          collapsedStorylineIds={collapsedStorylineIds}
+          onToggleStorylineCollapsed={handleToggleStorylineCollapsed}
+          storylineDragState={storylineDragState}
         />
         <Resizer
           isHovered={hoveredResizer === 2}
@@ -826,7 +958,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             activeFilterTag={editorState.activeTagDetails} 
             novelText={novel.text}
             globalFilterTagName={editorState.globalFilterTagName} 
-            includeDescendantTags={tagEditorMode === 'read' ? editorState.includeChildTagsInReadMode : true}
+            includeDescendantTags={(tagEditorMode === 'read' || tagEditorMode === 'plotRangeRead') ? editorState.includeChildTagsInReadMode : true}
             onTagClick={editorState.selectTagForReadMode} 
             onTagDoubleClick={editorState.handleTagGlobalSearch} 
             allUserTags={editorState.currentUserTags}

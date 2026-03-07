@@ -14,6 +14,7 @@ import {
   WordCount,
   ChildTagToggleButton,
   FindOpenButton,
+  SplitChapterButton,
   FindBarContainer,
   FindInput,
   FindStatus,
@@ -65,6 +66,14 @@ interface ContentPanelProps {
   onBatchCreateAnnotations?: (tagId: string, textSegments: Array<{ text: string; startIndex: number; endIndex: number }>) => void;
   includeChildTagsInReadMode: boolean;
   onToggleIncludeChildTagsInReadMode: () => void;
+  onSplitChapterAtCursor?: (chapterId: string, newContent: string, cursorOffset: number) => Promise<void> | void;
+  collapsedStorylineIds: Set<string>;
+  onToggleStorylineCollapsed: (storylineId: string) => void;
+  storylineDragState: {
+    draggedId: string | null;
+    dragOverId: string | null;
+    isDraggingOverList: boolean;
+  };
 }
 
 export const ContentPanel: React.FC<ContentPanelProps> = ({
@@ -79,7 +88,11 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   onLocateRequestHandled,
   onBatchCreateAnnotations,
   includeChildTagsInReadMode,
-  onToggleIncludeChildTagsInReadMode
+  onToggleIncludeChildTagsInReadMode,
+  onSplitChapterAtCursor,
+  collapsedStorylineIds,
+  onToggleStorylineCollapsed,
+  storylineDragState,
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
@@ -112,17 +125,21 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   const selectedChapterTitle = selectedChapter?.title ?? '';
   const selectedChapterStartIndex = selectedChapter?.originalStartIndex ?? 0;
   const selectedChapterContent = selectedChapter?.content ?? '';
+  const isAnnotationLikeMode = editorMode === 'annotation' || editorMode === 'plotRange';
+  const isReadMode = editorMode === 'read' || editorMode === 'plotRangeRead';
+  const isReadOrAnnotationLikeMode = isReadMode || isAnnotationLikeMode;
+  const isPreviewMode = isReadOrAnnotationLikeMode || editorMode === 'storyline';
 
   useEffect(() => {
     if (!locateRequest) return;
-    if (editorMode !== 'read') return;
+    if (!isReadMode) return;
 
     setPendingLocate({ chapterId: locateRequest.chapterId, absoluteIndex: locateRequest.absoluteIndex, highlightLength: 1 });
     if (onSelectChapter) {
       onSelectChapter(locateRequest.chapterId);
     }
     onLocateRequestHandled?.();
-  }, [locateRequest, editorMode, onSelectChapter, onLocateRequestHandled]);
+  }, [locateRequest, isReadMode, onSelectChapter, onLocateRequestHandled]);
 
   const handleLocateToText = useCallback((chapterId: string, absoluteIndex: number) => {
     setPendingLocate({ chapterId, absoluteIndex });
@@ -261,7 +278,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           const targetScrollTop = cachedRatio * scrollableHeight;
           textareaRef.current.scrollTop = targetScrollTop;
         }
-      } else if ((editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && contentDisplayRef.current) {
+      } else if (isPreviewMode && contentDisplayRef.current) {
         const { scrollHeight, clientHeight } = contentDisplayRef.current;
         const scrollableHeight = scrollHeight - clientHeight;
         if (scrollableHeight > 0) {
@@ -275,7 +292,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   // 阅读模式：从片段列表“定位”到正文对应位置
   useEffect(() => {
     if (!pendingLocate) return;
-    if ((editorMode !== 'read' && editorMode !== 'annotation') || viewMode !== 'full') return;
+    if (!isReadOrAnnotationLikeMode || viewMode !== 'full') return;
     if (selectedChapterId !== pendingLocate.chapterId) return;
     if (!contentDisplayRef.current) return;
 
@@ -456,7 +473,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
   const locateFindMatchByIndex = useCallback((matchIndex: number) => {
     if (viewMode !== 'full') return;
-    if (editorMode !== 'read' && editorMode !== 'annotation') return;
+    if (!isReadOrAnnotationLikeMode) return;
     if (!normalizedFindQuery) return;
 
     const match = findMatches[matchIndex];
@@ -479,7 +496,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
   const locateFindMatchByAbsoluteStart = useCallback((absoluteStart: number, chapterId: string | null) => {
     if (viewMode !== 'full') return;
-    if (editorMode !== 'read' && editorMode !== 'annotation') return;
+    if (!isReadOrAnnotationLikeMode) return;
     if (!normalizedFindQuery) return;
 
     setActiveFindAbsoluteStart(absoluteStart);
@@ -558,7 +575,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
   // Keyboard shortcuts: Ctrl+F opens; Enter/Down -> next; Shift+Enter/Up -> prev; Esc closes.
   useEffect(() => {
-    const canUseFindHere = (editorMode === 'read' || editorMode === 'annotation') && viewMode === 'full';
+    const canUseFindHere = isReadOrAnnotationLikeMode && viewMode === 'full';
 
     const onKeyDown = (e: KeyboardEvent) => {
       const key = e.key;
@@ -610,7 +627,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
 
   // If the panel view can no longer support searching, auto-close the find bar.
   useEffect(() => {
-    const canUseFindHere = (editorMode === 'read' || editorMode === 'annotation') && viewMode === 'full';
+    const canUseFindHere = isReadOrAnnotationLikeMode && viewMode === 'full';
     if (!canUseFindHere && isFindOpen) setIsFindOpen(false);
   }, [editorMode, viewMode, isFindOpen]);
 
@@ -679,6 +696,31 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       }
     }
   };
+
+  const handleSplitChapterClick = useCallback(async () => {
+    if (editorMode !== 'edit') return;
+    if (!selectedChapterId || !onSplitChapterAtCursor) return;
+    if (!textareaRef.current) return;
+
+    const cursorOffset = textareaRef.current.selectionStart ?? 0;
+    const normalizedText = editedText.replace(/\r\n|\r/g, '\n');
+
+    if (normalizedText.length === 0) {
+      alert('当前章节为空，无法拆分。');
+      return;
+    }
+    if (cursorOffset <= 0 || cursorOffset >= normalizedText.length) {
+      alert('请把光标放在章节中间位置后再拆分。');
+      return;
+    }
+
+    try {
+      await onSplitChapterAtCursor(selectedChapterId, normalizedText, cursorOffset);
+    } catch (error) {
+      console.error('[拆分章节] 处理失败:', error);
+      alert('拆分章节失败，请重试。');
+    }
+  }, [editorMode, selectedChapterId, onSplitChapterAtCursor, editedText]);
 
   const textForPreview = useMemo(() => {
     if (viewMode === 'snippet' && editorMode !== 'storyline') return ''; 
@@ -810,7 +852,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       isFindOpen &&
       Boolean(normalizedFindQuery) &&
       viewMode === 'full' &&
-      (editorMode === 'read' || editorMode === 'annotation');
+      isReadOrAnnotationLikeMode;
 
     const FIND_HIGHLIGHT_LIMIT_PER_CHAPTER = 2000;
     const findRanges = (() => {
@@ -904,7 +946,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     };
 
     const hasSelectedChapter = Boolean(selectedChapterId);
-    if (!currentDisplayText.trim() && (editorMode === 'read' || (editorMode === 'edit' && !novel.text && !hasSelectedChapter))) {
+    if (!currentDisplayText.trim() && (isReadMode || (editorMode === 'edit' && !novel.text && !hasSelectedChapter))) {
       const placeholderMsg = hasSelectedChapter 
         ? "当前章节内容为空。" 
         : (editorMode === 'edit' ? "在此处粘贴或输入您的小说文本。" : "小说内容为空。");
@@ -1053,13 +1095,24 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     if (editorMode === 'annotation') {
         return selectedChapterId ? `标注模式: ${selectedChapterTitle}` : "标注模式: 全文预览与标注";
     }
+    if (editorMode === 'plotRange') {
+        return selectedChapterId ? `剧情范围模式: ${selectedChapterTitle}` : "剧情范围模式: 全文预览与标注";
+    }
     if (editorMode === 'read') {
         if (viewMode === 'snippet') {
           if (globalFilterTagName) return `片段: 全局搜索 "${globalFilterTagName}"`;
           if (!activeFilterTagDetails) return "片段阅读";
           return `片段: ${activeFilterTagDetails.name}${includeChildTagsInReadMode ? ' (含子标签)' : ''}`;
         }
-        return selectedChapterId ? `阅读模式: ${selectedChapterTitle}` : "阅读模式: 小说原文";
+        return selectedChapterId ? `标注阅读模式: ${selectedChapterTitle}` : "标注阅读模式: 小说原文";
+    }
+    if (editorMode === 'plotRangeRead') {
+        if (viewMode === 'snippet') {
+          if (globalFilterTagName) return `范围片段: 全局搜索 "${globalFilterTagName}"`;
+          if (!activeFilterTagDetails) return "范围片段阅读";
+          return `范围片段: ${activeFilterTagDetails.name}${includeChildTagsInReadMode ? ' (含子标签)' : ''}`;
+        }
+        return selectedChapterId ? `剧情范围阅读模式: ${selectedChapterTitle}` : "剧情范围阅读模式: 小说原文";
     }
     if (editorMode === 'storyline') {
         return selectedChapterId ? `剧情线模式: ${selectedChapterTitle}` : "剧情线模式: 小说原文";
@@ -1109,7 +1162,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   // 处理标签拖放到选中文本
   const handleDragOver = (e: React.DragEvent) => {
     // 只在阅读模式且有选中文本时允许拖放
-    if (editorMode !== 'read' || !currentSelection || !onBatchCreateAnnotations) {
+    if (!isReadMode || !currentSelection || !onBatchCreateAnnotations) {
       return;
     }
     e.preventDefault();
@@ -1129,7 +1182,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     setIsDragOver(false);
 
     // 只在阅读模式且有选中文本时处理拖放
-    if (editorMode !== 'read' || !currentSelection || !onBatchCreateAnnotations) {
+    if (!isReadMode || !currentSelection || !onBatchCreateAnnotations) {
       return;
     }
 
@@ -1226,10 +1279,21 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       <Title>
         <span>{panelTitle}</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.sm }}>
+          {editorMode === 'edit' && selectedChapterId && onSplitChapterAtCursor && (
+            <SplitChapterButton
+              type="button"
+              title="按当前光标位置拆分章节"
+              aria-label="拆分章节"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={handleSplitChapterClick}
+            >
+              拆分章节
+            </SplitChapterButton>
+          )}
           {editorMode === 'edit' && wordCount !== null && (
             <WordCount>（字数：{wordCount.toLocaleString()}）</WordCount>
           )}
-          {editorMode === 'read' &&
+          {isReadMode &&
             viewMode === 'snippet' &&
             activeFilterTagDetails &&
             !globalFilterTagName &&
@@ -1244,7 +1308,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
                 含子标签
               </ChildTagToggleButton>
             )}
-          {(editorMode === 'read' || editorMode === 'annotation') && viewMode === 'full' && (
+          {isReadOrAnnotationLikeMode && viewMode === 'full' && (
             <FindOpenButton
               type="button"
               onClick={openFindBar}
@@ -1269,9 +1333,9 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         />
       )}
 
-      {(editorMode === 'annotation' || editorMode === 'read' || editorMode === 'storyline') && (
+      {isPreviewMode && (
         <ContentPreviewContainer>
-          {(editorMode === 'read' || editorMode === 'annotation') && viewMode === 'full' && isFindOpen && (
+          {isReadOrAnnotationLikeMode && viewMode === 'full' && isFindOpen && (
             <FindBarContainer>
               <FindInput
                 ref={findInputRef}
@@ -1326,7 +1390,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           <ContentDisplay
             ref={contentDisplayRef}
             id="content-display-area"
-            onMouseUp={editorMode === 'annotation' ? onTextSelection : (editorMode === 'read' ? onTextSelection : undefined)}
+            onMouseUp={isReadOrAnnotationLikeMode ? onTextSelection : undefined}
             onScroll={handleScroll}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -1334,11 +1398,11 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
             role="article"
             aria-live="polite"
             isFullNovelEditMode={isFullNovelEditMode}
-            isDragOver={isDragOver && editorMode === 'read'}
+            isDragOver={isDragOver && isReadMode}
           >
             {displayedContentOrSnippets}
           </ContentDisplay>
-          {editorMode === 'annotation' && nextChapter && (
+          {isAnnotationLikeMode && nextChapter && (
             <NextChapterButton
               visible={isNearBottom}
               onClick={handleNextChapter}
@@ -1356,6 +1420,9 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           targetElement={popoverState.target}
           storylines={novel.storylines || []}
           existingAnchor={popoverState.anchor}
+          collapsedStorylineIds={collapsedStorylineIds}
+          onToggleStorylineCollapsed={onToggleStorylineCollapsed}
+          storylineDragState={storylineDragState}
           onSave={handleSaveAnchor}
           onDelete={handleDeleteAnchor}
           onClose={() => setPopoverState(null)}

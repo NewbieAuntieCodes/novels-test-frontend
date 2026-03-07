@@ -64,6 +64,27 @@ export const FindOpenButton = styled.button`
   }
 `;
 
+export const SplitChapterButton = styled.button`
+  padding: ${SPACING.xs} ${SPACING.md};
+  font-size: ${FONTS.sizeSmall};
+  border: 1px solid ${COLORS.gray300};
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+  white-space: nowrap;
+  background-color: ${COLORS.gray200};
+  color: ${COLORS.text};
+
+  &:hover {
+    background-color: ${COLORS.gray300};
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+`;
+
 export const FindBarContainer = styled.div`
   position: absolute;
   top: ${SPACING.sm};
@@ -361,4 +382,3 @@ export const NextChapterButton = styled.button<{ visible: boolean }>`
     transform: scale(0.95);
   }
 `;
-
