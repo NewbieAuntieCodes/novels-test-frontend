@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import styled from '@emotion/styled';
+import JSZip from 'jszip';
 import type { Novel, Tag, Annotation, User, TagTemplate } from "../../types";
 import { COLORS, SPACING, FONTS, SHADOWS, BORDERS, panelStyles as basePanelStyles } from '../../styles';
 
@@ -179,6 +180,15 @@ const ResizerIcon = styled.span`
   text-orientation: mixed;
 `;
 
+const sanitizeFilenameForDownload = (value: string, fallback = '章节'): string => {
+  const trimmed = String(value || '').trim();
+  const safe = trimmed
+    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '');
+  return (safe || fallback).slice(0, 80);
+};
+
 const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   novel, allUserTags, allUserAnnotations, tagTemplates, onUpdateTemplates, setNovels, setAllUserTags, setAllUserAnnotations,
   onNavigateBack, currentUser, onUpdateTagName, onDeleteTag, novelDataCache, novelContentCache
@@ -204,7 +214,6 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
   const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
   const [locateRequest, setLocateRequest] = useState<{ chapterId: string; absoluteIndex: number } | null>(null);
-  const [collapsedStorylineIds, setCollapsedStorylineIds] = useState<Set<string>>(new Set());
   const [storylineDragState, setStorylineDragState] = useState<StorylineDragState>({
     draggedId: null,
     dragOverId: null,
@@ -215,41 +224,23 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
       ? 'annotation'
       : (tagEditorMode === 'plotRangeRead' ? 'read' : tagEditorMode);
 
-  const handleToggleStorylineCollapsed = (storylineId: string) => {
-    setCollapsedStorylineIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(storylineId)) {
-        next.delete(storylineId);
-      } else {
-        next.add(storylineId);
-      }
-      return next;
-    });
-  };
-
   const handleStorylineDragStateChange = (state: StorylineDragState) => {
-    setStorylineDragState(state);
+    setStorylineDragState((prev) => {
+      if (
+        prev.draggedId === state.draggedId &&
+        prev.dragOverId === state.dragOverId &&
+        prev.isDraggingOverList === state.isDraggingOverList
+      ) {
+        return prev;
+      }
+      return state;
+    });
   };
 
   const storylineIdSet = useMemo(
     () => new Set((novel.storylines || []).map((storyline) => storyline.id)),
     [novel.storylines]
   );
-
-  useEffect(() => {
-    setCollapsedStorylineIds((prev) => {
-      let changed = false;
-      const next = new Set<string>();
-      prev.forEach((id) => {
-        if (storylineIdSet.has(id)) {
-          next.add(id);
-        } else {
-          changed = true;
-        }
-      });
-      return changed ? next : prev;
-    });
-  }, [storylineIdSet]);
 
   useEffect(() => {
     if (!storylineDragState.draggedId && !storylineDragState.dragOverId) return;
@@ -600,6 +591,94 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const hoveredResizer = workspaceMode === 'note' ? noteWorkspaceResizer.hoveredResizer : tagWorkspaceResizer.hoveredResizer;
   const setHoveredResizer = workspaceMode === 'note' ? noteWorkspaceResizer.setHoveredResizer : tagWorkspaceResizer.setHoveredResizer;
 
+  const handleExportChapterRange = async (startChapter: number, endChapter: number): Promise<void> => {
+    const sortedChapters = [...(novel.chapters || [])].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+    const total = sortedChapters.length;
+    if (total === 0) {
+      alert('暂无章节可导出。');
+      return;
+    }
+
+    const isInvalidRange =
+      startChapter < 1 ||
+      endChapter < 1 ||
+      startChapter > endChapter ||
+      startChapter > total ||
+      endChapter > total;
+    if (isInvalidRange) {
+      alert(`章节范围无效，请输入 1-${total} 的有效区间。`);
+      return;
+    }
+
+    const selectedChapters = sortedChapters.slice(startChapter - 1, endChapter);
+    if (selectedChapters.length === 0) {
+      alert('该范围内没有可导出的章节。');
+      return;
+    }
+
+    const api = (window as any)?.electronAPI;
+    if (api?.tools?.exportChapterRangeTxt) {
+      try {
+        const result = await api.tools.exportChapterRangeTxt({
+          novelTitle: novel.title,
+          startChapter,
+          endChapter,
+          chapters: sortedChapters.map(chapter => ({
+            title: chapter.title,
+            content: chapter.content || '',
+            originalStartIndex: chapter.originalStartIndex,
+          })),
+        });
+
+        if (result?.cancelled) return;
+
+        const exportedCount =
+          typeof result?.exportedCount === 'number' ? result.exportedCount : selectedChapters.length;
+        const dirInfo = typeof result?.outputDir === 'string' ? `\n目录：${result.outputDir}` : '';
+        alert(`导出完成：${exportedCount} 个章节。${dirInfo}`);
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("No handler registered for 'tools:exportChapterRangeTxt'")) {
+          alert('检测到桌面端导出接口未就绪，已自动改用 ZIP 下载。');
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    const zip = new JSZip();
+    const usedFileBaseNames = new Map<string, number>();
+    selectedChapters.forEach((chapter, offset) => {
+      const chapterNumber = startChapter + offset;
+      const title = chapter.title || `第${chapterNumber}章`;
+      const safeTitle = sanitizeFilenameForDownload(title, `第${chapterNumber}章`);
+      const usedCount = usedFileBaseNames.get(safeTitle) || 0;
+      usedFileBaseNames.set(safeTitle, usedCount + 1);
+      const uniqueBaseName = usedCount === 0 ? safeTitle : `${safeTitle}(${usedCount + 1})`;
+      const fileName = `${uniqueBaseName}.txt`;
+      const body = String(chapter.content || '').replace(/\r\n?/g, '\n').trimEnd();
+      const text = body ? `${title}\n\n${body}\n` : `${title}\n`;
+      zip.file(fileName, text);
+    });
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const novelSafeName = sanitizeFilenameForDownload(novel.title || '小说', '小说');
+    const rangeName = `${startChapter}-${endChapter}`;
+    const zipName = `${novelSafeName}_${rangeName}.zip`;
+
+    const url = URL.createObjectURL(zipBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = zipName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    alert(`已下载 ZIP：${zipName}（包含 ${selectedChapters.length} 个章节）`);
+  };
+
   const contentPanelViewMode =
     (tagEditorMode === 'read' || tagEditorMode === 'plotRangeRead') &&
     (editorState.activeTagId || editorState.globalFilterTagName)
@@ -822,6 +901,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
                     selectedChapterId={editorState.selectedChapterId}
                     onSelectChapter={editorState.handleSelectChapter}
                     onCreateChapter={editorState.handleCreateChapter}
+                    onExportChapterRange={handleExportChapterRange}
                     onMergeChapterWithPrevious={editorState.handleMergeChapterWithPrevious}
                     onMergeChapterRange={editorState.handleMergeChapterRange}
                     onDeleteChapter={editorState.handleDeleteChapter}
@@ -844,15 +924,15 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           <StorylinePanel
             style={{ flexBasis: `${panelWidths[1]}%` }}
             storylines={novel.storylines || []}
+            plotAnchors={novel.plotAnchors || []}
             activeStorylineId={editorState.activeStorylineId}
             onAddStoryline={editorState.handleAddStoryline}
             onBatchAddStorylines={editorState.handleBatchAddStorylines}
+            onBatchDeleteStorylines={editorState.handleBatchDeleteStorylines}
             onUpdateStoryline={editorState.handleUpdateStoryline}
             onReorderStoryline={editorState.handleReorderStoryline}
             onDeleteStoryline={editorState.handleDeleteStoryline}
             onSelectStoryline={editorState.handleSelectStoryline}
-            collapsedStorylineIds={collapsedStorylineIds}
-            onToggleStorylineCollapsed={handleToggleStorylineCollapsed}
             onDragStateChange={handleStorylineDragStateChange}
           />
         ) : (
@@ -925,8 +1005,6 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           onLocateRequestHandled={() => setLocateRequest(null)}
           includeChildTagsInReadMode={editorState.includeChildTagsInReadMode}
           onToggleIncludeChildTagsInReadMode={editorState.toggleIncludeChildTagsInReadMode}
-          collapsedStorylineIds={collapsedStorylineIds}
-          onToggleStorylineCollapsed={handleToggleStorylineCollapsed}
           storylineDragState={storylineDragState}
         />
         <Resizer
@@ -946,7 +1024,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
              plotAnchors={novel.plotAnchors || []}
              storylines={novel.storylines || []}
              activeStorylineId={editorState.activeStorylineId}
-             onSelectAnchor={editorState.setScrollToAnchorId}
+             onSelectAnchor={editorState.handleSelectPlotAnchor}
              onUpdateAnchor={editorState.handleUpdatePlotAnchor}
              onDeleteAnchor={editorState.handleDeletePlotAnchor}
            />

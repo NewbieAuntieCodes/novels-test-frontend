@@ -78,6 +78,50 @@ type ConvertEpubToTxtResult =
       >;
     };
 
+type SplitTxtByChaptersResult =
+  | { cancelled: true; inputPath?: string; batch?: boolean; inputCount?: number }
+  | {
+      cancelled: false;
+      batch?: false;
+      inputPath: string;
+      outputDir: string;
+      chapterCount: number;
+      charCount: number;
+      bytesIn?: number;
+      bytesOutTotal?: number;
+      items: Array<{
+        index: number;
+        title: string;
+        outputPath: string;
+        charCount: number;
+        bytesOut?: number;
+      }>;
+    }
+  | {
+      cancelled: false;
+      batch: true;
+      outputDir: string;
+      total: number;
+      successCount: number;
+      failCount: number;
+      items: Array<
+        | {
+            ok: true;
+            inputPath: string;
+            outputDir: string;
+            chapterCount: number;
+            charCount: number;
+            bytesIn?: number;
+            bytesOutTotal?: number;
+          }
+        | {
+            ok: false;
+            inputPath: string;
+            error: string;
+          }
+      >;
+    };
+
 interface ToolsPageProps {
   onBack: () => void;
 }
@@ -219,6 +263,12 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
   const [isEpubDragHandlerMissing, setIsEpubDragHandlerMissing] = useState(false);
   const epubDragCounter = useRef(0);
 
+  const [isRunningSplitTxtByChapters, setIsRunningSplitTxtByChapters] = useState(false);
+  const [lastSplitTxtByChaptersResult, setLastSplitTxtByChaptersResult] = useState<SplitTxtByChaptersResult | null>(null);
+  const [isSplitTxtDragActive, setIsSplitTxtDragActive] = useState(false);
+  const [isSplitTxtDragHandlerMissing, setIsSplitTxtDragHandlerMissing] = useState(false);
+  const splitTxtDragCounter = useRef(0);
+
   const isElectronAvailable = useMemo(() => {
     const api = (window as any)?.electronAPI;
     return Boolean(
@@ -226,6 +276,10 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
         api?.tools?.removeBlankLinesFileFromPath ||
         api?.tools?.removeBlankLinesBatch ||
         api?.tools?.removeBlankLinesBatchFromPaths ||
+        api?.tools?.splitTxtByChapters ||
+        api?.tools?.splitTxtByChaptersFromPath ||
+        api?.tools?.splitTxtByChaptersBatch ||
+        api?.tools?.splitTxtByChaptersBatchFromPaths ||
         api?.tools?.convertEpubToTxt ||
         api?.tools?.convertEpubToTxtFromPath ||
         api?.tools?.convertEpubToTxtBatch ||
@@ -263,12 +317,35 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
     return Boolean(api?.tools?.convertEpubToTxtBatchFromPaths);
   }, []);
 
+  const canRunSplitTxtByChaptersBatch = useMemo(() => {
+    const api = (window as any)?.electronAPI;
+    return Boolean(api?.tools?.splitTxtByChaptersBatch);
+  }, []);
+
+  const canRunSplitTxtByChaptersFromPath = useMemo(() => {
+    const api = (window as any)?.electronAPI;
+    return Boolean(api?.tools?.splitTxtByChaptersFromPath);
+  }, []);
+
+  const canRunSplitTxtByChaptersBatchFromPaths = useMemo(() => {
+    const api = (window as any)?.electronAPI;
+    return Boolean(api?.tools?.splitTxtByChaptersBatchFromPaths);
+  }, []);
+
+  const canRunSplitTxtByChapters = useMemo(() => {
+    const api = (window as any)?.electronAPI;
+    return Boolean(api?.tools?.splitTxtByChapters);
+  }, []);
+
   const canRunTxtDrop = canRunTxtFromPath || canRunTxtBatchFromPaths;
   const canRunEpubDrop = canRunEpubFromPath || canRunEpubBatchFromPaths;
+  const canRunSplitTxtDrop = canRunSplitTxtByChaptersFromPath || canRunSplitTxtByChaptersBatchFromPaths;
 
-  const isAnyRunning = isRunningRemoveBlankLines || isRunningEpubToTxt;
+  const isAnyRunning = isRunningRemoveBlankLines || isRunningEpubToTxt || isRunningSplitTxtByChapters;
   const txtDropDisabled = !isElectronAvailable || isAnyRunning || !canRunTxtDrop || isTxtDragHandlerMissing;
   const epubDropDisabled = !isElectronAvailable || isAnyRunning || !canRunEpubDrop || isEpubDragHandlerMissing;
+  const splitTxtDropDisabled =
+    !isElectronAvailable || isAnyRunning || !canRunSplitTxtDrop || isSplitTxtDragHandlerMissing;
 
   useEffect(() => {
     const preventDefault = (event: DragEvent) => {
@@ -377,6 +454,103 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
       }
     } finally {
       setIsRunningRemoveBlankLines(false);
+    }
+  };
+
+  const runSplitTxtByChapters = async () => {
+    const api = (window as any)?.electronAPI;
+    if (!api?.tools?.splitTxtByChapters) {
+      alert('当前 Electron 版本不支持“按章节拆分 TXT”，请更新 Electron。');
+      return;
+    }
+
+    setIsRunningSplitTxtByChapters(true);
+    try {
+      const result = (await api.tools.splitTxtByChapters()) as SplitTxtByChaptersResult;
+      setLastSplitTxtByChaptersResult(result);
+    } catch (error) {
+      console.error(error);
+      alert(`处理失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setIsRunningSplitTxtByChapters(false);
+    }
+  };
+
+  const runSplitTxtByChaptersBatch = async () => {
+    const api = (window as any)?.electronAPI;
+    if (!api?.tools?.splitTxtByChaptersBatch) {
+      alert('当前 Electron 版本不支持“批量拆章节”，请更新 Electron。');
+      return;
+    }
+
+    setIsRunningSplitTxtByChapters(true);
+    try {
+      const result = (await api.tools.splitTxtByChaptersBatch()) as SplitTxtByChaptersResult;
+      setLastSplitTxtByChaptersResult(result);
+    } catch (error) {
+      console.error(error);
+      alert(`处理失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setIsRunningSplitTxtByChapters(false);
+    }
+  };
+
+  const runSplitTxtByChaptersBatchFromPaths = async (inputPaths: string[]) => {
+    const api = (window as any)?.electronAPI;
+    if (!api?.tools?.splitTxtByChaptersBatchFromPaths) {
+      alert('当前 Electron 版本不支持“拖拽批量拆分”，请更新 Electron。');
+      return;
+    }
+    if (!inputPaths.length) return;
+
+    setIsRunningSplitTxtByChapters(true);
+    try {
+      const result = (await api.tools.splitTxtByChaptersBatchFromPaths(inputPaths)) as SplitTxtByChaptersResult;
+      setLastSplitTxtByChaptersResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("No handler registered for 'tools:splitTxtByChaptersBatchFromPaths'")) {
+        setIsSplitTxtDragHandlerMissing(true);
+        alert('拖拽批量功能需要重启 Electron 主进程后生效。已切换为手动批量选择。');
+        if (api?.tools?.splitTxtByChaptersBatch) {
+          const fallback = (await api.tools.splitTxtByChaptersBatch()) as SplitTxtByChaptersResult;
+          setLastSplitTxtByChaptersResult(fallback);
+        }
+      } else {
+        console.error(error);
+        alert(`处理失败: ${message || '未知错误'}`);
+      }
+    } finally {
+      setIsRunningSplitTxtByChapters(false);
+    }
+  };
+
+  const runSplitTxtByChaptersFromPath = async (inputPath: string) => {
+    const api = (window as any)?.electronAPI;
+    if (!api?.tools?.splitTxtByChaptersFromPath) {
+      alert('当前 Electron 版本不支持“拖拽文件拆分”，请点击按钮选择文件。');
+      return;
+    }
+
+    setIsRunningSplitTxtByChapters(true);
+    try {
+      const result = (await api.tools.splitTxtByChaptersFromPath(inputPath)) as SplitTxtByChaptersResult;
+      setLastSplitTxtByChaptersResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("No handler registered for 'tools:splitTxtByChaptersFromPath'")) {
+        setIsSplitTxtDragHandlerMissing(true);
+        alert('拖拽功能需要重启 Electron 主进程后才会生效（不是刷新网页）。已自动切换为“选择文件”模式。');
+        if (api?.tools?.splitTxtByChapters) {
+          const fallback = (await api.tools.splitTxtByChapters()) as SplitTxtByChaptersResult;
+          setLastSplitTxtByChaptersResult(fallback);
+        }
+      } else {
+        console.error(error);
+        alert(`处理失败: ${message || '未知错误'}`);
+      }
+    } finally {
+      setIsRunningSplitTxtByChapters(false);
     }
   };
 
@@ -611,6 +785,73 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
     await runConvertEpubToTxtFromPath(droppedPaths[0]);
   };
 
+  const onSplitTxtDragEnter: React.DragEventHandler<HTMLDivElement> = event => {
+    if (splitTxtDropDisabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    splitTxtDragCounter.current += 1;
+    setIsSplitTxtDragActive(true);
+  };
+
+  const onSplitTxtDragOver: React.DragEventHandler<HTMLDivElement> = event => {
+    if (splitTxtDropDisabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const onSplitTxtDragLeave: React.DragEventHandler<HTMLDivElement> = event => {
+    if (splitTxtDropDisabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    splitTxtDragCounter.current -= 1;
+    if (splitTxtDragCounter.current <= 0) {
+      splitTxtDragCounter.current = 0;
+      setIsSplitTxtDragActive(false);
+    }
+  };
+
+  const onSplitTxtDrop: React.DragEventHandler<HTMLDivElement> = async event => {
+    event.preventDefault();
+    event.stopPropagation();
+    splitTxtDragCounter.current = 0;
+    setIsSplitTxtDragActive(false);
+
+    if (splitTxtDropDisabled) {
+      if (!isElectronAvailable) alert('该工具需要在 Electron 桌面版中运行。');
+      else if (!canRunSplitTxtDrop) alert('当前 Electron 版本不支持“拖拽文件处理”，请更新 Electron。');
+      return;
+    }
+
+    const droppedPaths = collectDroppedPaths(event, '.txt');
+    if (droppedPaths.length === 0) {
+      alert('浏览器环境无法获取本地文件路径，请在 Electron 桌面版中使用拖拽。');
+      return;
+    }
+
+    if (droppedPaths.length > 1) {
+      if (!canRunSplitTxtByChaptersBatchFromPaths) {
+        alert('当前 Electron 版本不支持“拖拽批量拆分”，请重启后重试或使用批量选择按钮。');
+        return;
+      }
+      await runSplitTxtByChaptersBatchFromPaths(droppedPaths);
+      return;
+    }
+
+    if (!canRunSplitTxtByChaptersFromPath) {
+      if (canRunSplitTxtByChaptersBatchFromPaths) {
+        await runSplitTxtByChaptersBatchFromPaths(droppedPaths);
+        return;
+      }
+      alert('当前 Electron 版本不支持“拖拽文件处理”，请更新 Electron。');
+      return;
+    }
+
+    await runSplitTxtByChaptersFromPath(droppedPaths[0]);
+  };
+
   const removeBlankLinesResultText = useMemo(() => {
     if (!lastRemoveBlankLinesResult) return '';
     if (lastRemoveBlankLinesResult.cancelled) {
@@ -699,6 +940,58 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
       .filter(Boolean)
       .join('\n');
   }, [lastEpubToTxtResult]);
+
+  const splitTxtByChaptersResultText = useMemo(() => {
+    if (!lastSplitTxtByChaptersResult) return '';
+    if (lastSplitTxtByChaptersResult.cancelled) {
+      if (lastSplitTxtByChaptersResult.batch) {
+        return `已取消批量拆分${lastSplitTxtByChaptersResult.inputCount ? `\n已选文件数: ${lastSplitTxtByChaptersResult.inputCount}` : ''}`;
+      }
+      return `已取消${lastSplitTxtByChaptersResult.inputPath ? `\n输入文件: ${lastSplitTxtByChaptersResult.inputPath}` : ''}`;
+    }
+
+    if (lastSplitTxtByChaptersResult.batch) {
+      const previewItems = lastSplitTxtByChaptersResult.items.slice(0, 12).map((item, index) => {
+        if (item.ok) {
+          return `${index + 1}. OK ${basename(item.inputPath)} -> ${item.chapterCount} 章 (${basename(item.outputDir)})`;
+        }
+        return `${index + 1}. FAIL ${basename(item.inputPath)}: ${item.error}`;
+      });
+      const extraCount = Math.max(0, lastSplitTxtByChaptersResult.items.length - previewItems.length);
+
+      return [
+        '批量拆分结果（TXT 按章节）',
+        `输出根目录: ${lastSplitTxtByChaptersResult.outputDir}`,
+        `总数: ${lastSplitTxtByChaptersResult.total}`,
+        `成功: ${lastSplitTxtByChaptersResult.successCount}`,
+        `失败: ${lastSplitTxtByChaptersResult.failCount}`,
+        '',
+        ...previewItems,
+        extraCount > 0 ? `... 还有 ${extraCount} 条未展开` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    const previewItems = lastSplitTxtByChaptersResult.items.slice(0, 10).map(item => {
+      return `${String(item.index).padStart(3, '0')}. ${basename(item.outputPath)} (${item.charCount} 字符)`;
+    });
+    const extraCount = Math.max(0, lastSplitTxtByChaptersResult.items.length - previewItems.length);
+
+    return [
+      `输入文件: ${lastSplitTxtByChaptersResult.inputPath}`,
+      `输出目录: ${lastSplitTxtByChaptersResult.outputDir}`,
+      `拆分章节: ${lastSplitTxtByChaptersResult.chapterCount}`,
+      `输出字符数: ${lastSplitTxtByChaptersResult.charCount}`,
+      lastSplitTxtByChaptersResult.bytesIn !== undefined ? `输入大小: ${formatBytes(lastSplitTxtByChaptersResult.bytesIn)}` : '',
+      lastSplitTxtByChaptersResult.bytesOutTotal !== undefined ? `输出总大小: ${formatBytes(lastSplitTxtByChaptersResult.bytesOutTotal)}` : '',
+      '',
+      ...previewItems,
+      extraCount > 0 ? `... 还有 ${extraCount} 章未展开` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }, [lastSplitTxtByChaptersResult]);
 
   return (
     <Page>
@@ -802,6 +1095,53 @@ const ToolsPage: React.FC<ToolsPageProps> = ({ onBack }) => {
             {isRunningEpubToTxt ? '转换中...' : '批量选择 EPUB 并导出 TXT'}
           </BaseButton>
           {epubToTxtResultText && <ResultBox>{epubToTxtResultText}</ResultBox>}
+        </ToolCard>
+
+        <ToolCard>
+          <ToolTitle>TXT 按章节拆分</ToolTitle>
+          <ToolDesc>支持单文件和批量拆分：选择或拖拽 `.txt` 文件，自动输出为“每章一个 TXT 文件”（不会覆盖原文件）。</ToolDesc>
+          <DropZone
+            $active={isSplitTxtDragActive}
+            $disabled={splitTxtDropDisabled}
+            onDragEnter={onSplitTxtDragEnter}
+            onDragOver={onSplitTxtDragOver}
+            onDragLeave={onSplitTxtDragLeave}
+            onDrop={onSplitTxtDrop}
+            role="button"
+            tabIndex={0}
+            aria-disabled={splitTxtDropDisabled}
+            title={
+              isSplitTxtDragHandlerMissing
+                ? '拖拽功能需要重启 Electron 后生效'
+                : canRunSplitTxtDrop
+                  ? '拖拽一个或多个 .txt 文件到这里'
+                  : '当前 Electron 版本不支持拖拽处理'
+            }
+          >
+            {canRunSplitTxtDrop
+              ? isSplitTxtDragHandlerMissing
+                ? '拖拽功能未就绪（请重启 Electron）'
+                : isSplitTxtDragActive
+                  ? '松开鼠标开始拆分'
+                  : '拖拽一个或多个 .txt 文件到这里'
+              : '拖拽处理不可用（请更新 Electron）'}
+          </DropZone>
+          <BaseButton
+            type="button"
+            onClick={runSplitTxtByChapters}
+            disabled={!isElectronAvailable || !canRunSplitTxtByChapters || isAnyRunning}
+          >
+            {isRunningSplitTxtByChapters ? '拆分中...' : '选择 TXT 并拆分章节'}
+          </BaseButton>
+          <BaseButton
+            type="button"
+            variant="secondary"
+            onClick={runSplitTxtByChaptersBatch}
+            disabled={!isElectronAvailable || !canRunSplitTxtByChaptersBatch || isAnyRunning}
+          >
+            {isRunningSplitTxtByChapters ? '拆分中...' : '批量选择 TXT 并拆分章节'}
+          </BaseButton>
+          {splitTxtByChaptersResultText && <ResultBox>{splitTxtByChaptersResultText}</ResultBox>}
         </ToolCard>
       </ToolGrid>
     </Page>

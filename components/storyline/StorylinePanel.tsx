@@ -1,20 +1,22 @@
-import React, { useState, useRef, useEffect, useMemo, DragEvent } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, DragEvent } from 'react';
 import styled from '@emotion/styled';
-import type { Storyline } from "../types";
+import type { PlotAnchor, Storyline } from "../types";
 import { getNextColor } from "../../utils";
 import { COLORS, SPACING, FONTS, BORDERS, SHADOWS, panelStyles, globalPlaceholderTextStyles } from '../../styles';
 
 interface StorylinePanelProps {
   storylines: Storyline[];
+  plotAnchors: PlotAnchor[];
   activeStorylineId: string | null;
   onAddStoryline: (name: string, color: string, parentId: string | null) => void;
   onBatchAddStorylines: (items: Array<{ path: string; color?: string }>) => Promise<{ createdCount: number; skippedCount: number }>;
+  onBatchDeleteStorylines: (
+    storylineIds: string[]
+  ) => Promise<{ deletedCount: number; affectedAnchorCount: number; pendingAnchorCount: number }>;
   onUpdateStoryline: (id: string, updates: Partial<Storyline>) => void;
   onReorderStoryline: (draggedId: string, targetId: string, position: 'before' | 'after') => void;
   onDeleteStoryline: (id: string) => void;
   onSelectStoryline: (id: string | null) => void;
-  collapsedStorylineIds: Set<string>;
-  onToggleStorylineCollapsed: (storylineId: string) => void;
   onDragStateChange?: (state: { draggedId: string | null; dragOverId: string | null; isDraggingOverList: boolean }) => void;
   style?: React.CSSProperties;
 }
@@ -97,6 +99,34 @@ const SecondaryButton = styled.button`
 const ButtonRow = styled.div`
   display: flex;
   gap: ${SPACING.sm};
+`;
+
+const DangerButton = styled(SecondaryButton)`
+  color: ${COLORS.danger};
+  border-color: ${COLORS.danger};
+
+  &:hover:not(:disabled) {
+    background-color: #ffe9ea;
+    border-color: ${COLORS.dangerHover};
+    color: ${COLORS.dangerHover};
+  }
+`;
+
+const BatchBar = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: ${SPACING.sm};
+  padding: ${SPACING.sm};
+  margin-bottom: ${SPACING.md};
+  border: ${BORDERS.width} ${BORDERS.style} ${COLORS.danger};
+  border-radius: ${BORDERS.radius};
+  background-color: #fff5f5;
+`;
+
+const BatchInfo = styled.div`
+  width: 100%;
+  color: ${COLORS.danger};
+  font-size: ${FONTS.sizeSmall};
 `;
 
 const ParentSelect = styled.select`
@@ -225,6 +255,27 @@ const ColorPreview = styled.div`
   flex-shrink: 0;
 `;
 
+const RowColorInput = styled.input`
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &::-webkit-color-swatch-wrapper {
+    padding: 0;
+    border-radius: 2px;
+  }
+
+  &::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+  }
+`;
+
 const StorylineName = styled.span`
   flex-grow: 1;
   word-break: break-word;
@@ -234,6 +285,14 @@ const ActionButton = styled.button`
   background: none; border: none; cursor: pointer; padding: ${SPACING.xs};
   color: ${COLORS.textLighter};
   &:hover { color: ${COLORS.primary}; }
+`;
+
+const BatchCheckbox = styled.input`
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  flex-shrink: 0;
 `;
 
 const ExpandToggleButton = styled.button`
@@ -388,9 +447,9 @@ const parseBulkStorylineInput = (input: string): Array<{ path: string; color?: s
     if (!line) continue;
 
     let segments: string[] = [];
-    if (/[/>／＞]/.test(line)) {
+    if (/[>＞]/.test(line)) {
       segments = line
-        .split(/[/>／＞]/)
+        .split(/[>＞]/)
         .map((segment) => segment.trim())
         .filter(Boolean);
     } else {
@@ -412,18 +471,20 @@ const parseBulkStorylineInput = (input: string): Array<{ path: string; color?: s
   return items;
 };
 
+const COLOR_UPDATE_DEBOUNCE_MS = 800;
+
 
 const StorylinePanel: React.FC<StorylinePanelProps> = ({
   storylines,
+  plotAnchors,
   activeStorylineId,
   onAddStoryline,
   onBatchAddStorylines,
+  onBatchDeleteStorylines,
   onUpdateStoryline,
   onReorderStoryline,
   onDeleteStoryline,
   onSelectStoryline,
-  collapsedStorylineIds,
-  onToggleStorylineCollapsed,
   onDragStateChange,
   style
 }) => {
@@ -433,6 +494,10 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [bulkImportText, setBulkImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [isBatchDeleteMode, setIsBatchDeleteMode] = useState(false);
+  const [selectedStorylineIds, setSelectedStorylineIds] = useState<Set<string>>(new Set());
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [collapsedStorylineIds, setCollapsedStorylineIds] = useState<Set<string>>(new Set());
   
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
@@ -448,6 +513,42 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
     y: number;
   } | null>(null);
   const dropActionMenuRef = useRef<HTMLDivElement>(null);
+  const colorUpdateTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingColorUpdatesRef = useRef<Map<string, string>>(new Map());
+  const storylineColorByIdRef = useRef<Map<string, string>>(new Map());
+
+  const handleToggleStorylineCollapsed = useCallback((storylineId: string) => {
+    setCollapsedStorylineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(storylineId)) {
+        next.delete(storylineId);
+      } else {
+        next.add(storylineId);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    storylineColorByIdRef.current = new Map(storylines.map((storyline) => [storyline.id, storyline.color]));
+  }, [storylines]);
+
+  useEffect(() => {
+    const validIds = new Set(storylines.map((storyline) => storyline.id));
+    setCollapsedStorylineIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [storylines]);
 
 
   useEffect(() => {
@@ -464,6 +565,26 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
     }
     setNewStorylineParent(null);
   }, [activeStorylineId, storylines]);
+
+  useEffect(() => {
+    const currentIds = new Set(storylines.map((s) => s.id));
+    setSelectedStorylineIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(Array.from(prev).filter((id) => currentIds.has(id)));
+      if (next.size === prev.size) return prev;
+      return next;
+    });
+  }, [storylines]);
+
+  useEffect(() => {
+    if (!isBatchDeleteMode) return;
+    setEditingId(null);
+    setEditingName('');
+    setDropActionMenu(null);
+    setDraggedId(null);
+    setDragOverId(null);
+    setIsDraggingOverList(false);
+  }, [isBatchDeleteMode]);
 
   useEffect(() => {
     if (!dropActionMenu) return;
@@ -488,6 +609,14 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
       onDragStateChange?.({ draggedId: null, dragOverId: null, isDraggingOverList: false });
     };
   }, [onDragStateChange]);
+
+  useEffect(() => {
+    return () => {
+      colorUpdateTimersRef.current.forEach((timer) => clearTimeout(timer));
+      colorUpdateTimersRef.current.clear();
+      pendingColorUpdatesRef.current.clear();
+    };
+  }, []);
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -537,6 +666,142 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
     }
     handleCancelEdit();
   };
+
+  const flushStorylineColorUpdate = (storylineId: string) => {
+    const timer = colorUpdateTimersRef.current.get(storylineId);
+    if (timer) {
+      clearTimeout(timer);
+      colorUpdateTimersRef.current.delete(storylineId);
+    }
+
+    const pendingColor = pendingColorUpdatesRef.current.get(storylineId);
+    if (!pendingColor) return;
+    pendingColorUpdatesRef.current.delete(storylineId);
+
+    const currentColor = storylineColorByIdRef.current.get(storylineId);
+    if (!currentColor) return;
+    if (currentColor.toLowerCase() === pendingColor.toLowerCase()) return;
+
+    onUpdateStoryline(storylineId, { color: pendingColor });
+  };
+
+  const handleStorylineColorChange = (storylineId: string, color: string) => {
+    pendingColorUpdatesRef.current.set(storylineId, color);
+
+    const existingTimer = colorUpdateTimersRef.current.get(storylineId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      flushStorylineColorUpdate(storylineId);
+    }, COLOR_UPDATE_DEBOUNCE_MS);
+    colorUpdateTimersRef.current.set(storylineId, timer);
+  };
+
+  const getCascadeDeleteSet = (ids: Iterable<string>) => {
+    const next = new Set<string>();
+    for (const id of ids) {
+      next.add(id);
+      const descendants = getAllDescendantIds(id, storylines);
+      descendants.forEach((descendantId) => next.add(descendantId));
+    }
+    return next;
+  };
+
+  const computeDeleteImpact = (ids: Iterable<string>) => {
+    const cascadeIds = getCascadeDeleteSet(ids);
+    const affectedAnchors = plotAnchors.filter((anchor) =>
+      anchor.storylineIds.some((storylineId) => cascadeIds.has(storylineId))
+    );
+    const pendingAfterDeleteCount = affectedAnchors.filter((anchor) => {
+      const remaining = anchor.storylineIds.filter((storylineId) => !cascadeIds.has(storylineId));
+      return remaining.length === 0;
+    }).length;
+
+    return {
+      cascadeIds,
+      deleteCount: cascadeIds.size,
+      affectedAnchorCount: affectedAnchors.length,
+      pendingAfterDeleteCount,
+    };
+  };
+
+  const toggleBatchMode = () => {
+    if (isBatchDeleteMode) {
+      setIsBatchDeleteMode(false);
+      setSelectedStorylineIds(new Set());
+      return;
+    }
+    setIsBatchDeleteMode(true);
+  };
+
+  const toggleStorylineChecked = (storylineId: string) => {
+    setSelectedStorylineIds((prev) => {
+      const next = new Set(prev);
+      const cascadeSet = getCascadeDeleteSet([storylineId]);
+      if (next.has(storylineId)) {
+        cascadeSet.forEach((id) => next.delete(id));
+      } else {
+        cascadeSet.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllForBatchDelete = () => {
+    setSelectedStorylineIds(new Set(storylines.map((s) => s.id)));
+  };
+
+  const handleClearBatchDeleteSelection = () => {
+    setSelectedStorylineIds(new Set());
+  };
+
+  const handleInvertBatchDeleteSelection = () => {
+    setSelectedStorylineIds((prev) => {
+      const allIds = storylines.map((s) => s.id);
+      const next = new Set<string>();
+      allIds.forEach((id) => {
+        if (!prev.has(id)) next.add(id);
+      });
+      return next;
+    });
+  };
+
+  const handleBatchDeleteConfirm = async () => {
+    if (selectedStorylineIds.size === 0) {
+      alert('请先选择要删除的故事线。');
+      return;
+    }
+
+    const impact = computeDeleteImpact(selectedStorylineIds);
+    const confirmed = window.confirm(
+      [
+        `确定删除选中的故事线吗？`,
+        `将删除故事线：${impact.deleteCount} 条`,
+        `影响锚点：${impact.affectedAnchorCount} 个`,
+        `将转为待归类：${impact.pendingAfterDeleteCount} 个`,
+        '',
+        '此操作不可撤销。',
+      ].join('\n')
+    );
+    if (!confirmed) return;
+
+    setIsBatchDeleting(true);
+    try {
+      const result = await onBatchDeleteStorylines(Array.from(selectedStorylineIds));
+      setSelectedStorylineIds(new Set());
+      setIsBatchDeleteMode(false);
+      alert(
+        `批量删除完成：删除故事线 ${result.deletedCount} 条，影响锚点 ${result.affectedAnchorCount} 个，转为待归类 ${result.pendingAnchorCount} 个。`
+      );
+    } catch (error) {
+      console.error('批量删除剧情线失败:', error);
+      alert('批量删除剧情线失败,请稍后重试');
+    } finally {
+      setIsBatchDeleting(false);
+    }
+  };
   
   const confirmDelete = (id: string, name: string) => {
     if (window.confirm(`您确定要删除故事线 "${name}" 吗？其子故事线将移至上级。`)) {
@@ -546,12 +811,14 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
 
   // --- Drag & Drop Handlers ---
   const handleDragStart = (e: DragEvent, id: string) => {
+    if (isBatchDeleteMode) return;
     e.dataTransfer.setData('text/plain', id);
     e.dataTransfer.effectAllowed = 'move';
     setDraggedId(id);
   };
 
   const handleDragOverItem = (e: DragEvent, id: string) => {
+    if (isBatchDeleteMode) return;
     e.preventDefault();
     if (id !== dragOverId) {
       setDragOverId(id);
@@ -566,6 +833,7 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   };
 
   const handleDragOverList = (e: DragEvent) => {
+    if (isBatchDeleteMode) return;
     e.preventDefault();
     if (!dragOverId) {
         setIsDraggingOverList(true);
@@ -579,6 +847,7 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   };
 
   const handleDropOnItem = (e: DragEvent, targetId: string) => {
+    if (isBatchDeleteMode) return;
     e.preventDefault();
     e.stopPropagation();
     const droppedId = e.dataTransfer.getData('text/plain');
@@ -597,6 +866,7 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   };
   
   const handleDropOnList = (e: DragEvent) => {
+    if (isBatchDeleteMode) return;
     e.preventDefault();
     const droppedId = e.dataTransfer.getData('text/plain');
     const original = storylines.find(s => s.id === droppedId);
@@ -607,6 +877,7 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
   };
 
   const handleDragEnd = () => {
+    if (isBatchDeleteMode) return;
     setDraggedId(null);
     setDragOverId(null);
     setIsDraggingOverList(false);
@@ -653,24 +924,39 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
       return (
         <React.Fragment key={sl.id}>
           <StorylineItem
-            isActive={sl.id === activeStorylineId && !editingId}
+            isActive={!isBatchDeleteMode && sl.id === activeStorylineId && !editingId}
             level={level}
             isDragOverTarget={dragOverId === sl.id}
             isBeingDragged={draggedId === sl.id}
-            onClick={() => onSelectStoryline(sl.id === activeStorylineId ? null : sl.id)}
-            draggable={!editingId}
+            onClick={() => {
+              if (isBatchDeleteMode) {
+                toggleStorylineChecked(sl.id);
+                return;
+              }
+              onSelectStoryline(sl.id === activeStorylineId ? null : sl.id);
+            }}
+            draggable={!editingId && !isBatchDeleteMode}
             onDragStart={e => handleDragStart(e, sl.id)}
             onDragOver={e => handleDragOverItem(e, sl.id)}
             onDragLeave={() => handleDragLeaveItem(sl.id)}
             onDrop={e => handleDropOnItem(e, sl.id)}
             onDragEnd={handleDragEnd}
           >
+            {isBatchDeleteMode && (
+              <BatchCheckbox
+                type="checkbox"
+                checked={selectedStorylineIds.has(sl.id)}
+                onChange={() => toggleStorylineChecked(sl.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`选择删除故事线 ${sl.name}`}
+              />
+            )}
             {hasChildren ? (
               <ExpandToggleButton
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onToggleStorylineCollapsed(sl.id);
+                  handleToggleStorylineCollapsed(sl.id);
                 }}
                 title={isCollapsed ? '展开子剧情' : '折叠子剧情'}
                 aria-label={isCollapsed ? '展开子剧情' : '折叠子剧情'}
@@ -680,7 +966,22 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
             ) : (
               <span style={{ width: 20, flexShrink: 0 }} />
             )}
-            <ColorPreview style={{ backgroundColor: sl.color }} />
+            {isBatchDeleteMode ? (
+              <ColorPreview style={{ backgroundColor: sl.color }} />
+            ) : (
+              <RowColorInput
+                key={`${sl.id}:${sl.color}`}
+                type="color"
+                defaultValue={sl.color}
+                title="修改颜色"
+                aria-label={`修改故事线 ${sl.name} 颜色`}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onDragStart={(e) => e.preventDefault()}
+                onChange={(e) => handleStorylineColorChange(sl.id, e.target.value)}
+                onBlur={() => flushStorylineColorUpdate(sl.id)}
+              />
+            )}
             {editingId === sl.id ? (
               <StorylineInput
                 ref={inputRef}
@@ -696,9 +997,13 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
             ) : (
               <StorylineName>{sl.name}</StorylineName>
             )}
-            
-            <ActionButton onClick={(e) => { e.stopPropagation(); handleStartEdit(sl); }} title="重命名">✏️</ActionButton>
-            <ActionButton onClick={(e) => { e.stopPropagation(); confirmDelete(sl.id, sl.name); }} title="删除">🗑️</ActionButton>
+
+            {!isBatchDeleteMode && (
+              <>
+                <ActionButton onClick={(e) => { e.stopPropagation(); handleStartEdit(sl); }} title="重命名">✏️</ActionButton>
+                <ActionButton onClick={(e) => { e.stopPropagation(); confirmDelete(sl.id, sl.name); }} title="删除">🗑️</ActionButton>
+              </>
+            )}
           </StorylineItem>
           {!isCollapsed && renderStorylinesRecursive(sl.id, level + 1)}
         </React.Fragment>
@@ -738,15 +1043,39 @@ const StorylinePanel: React.FC<StorylinePanelProps> = ({
           >
             {isBulkImportOpen ? '收起批量导入' : '批量导入'}
           </SecondaryButton>
+          <DangerButton type="button" onClick={toggleBatchMode}>
+            {isBatchDeleteMode ? '退出批量删除' : '批量删除'}
+          </DangerButton>
         </ButtonRow>
       </StorylineForm>
+      {isBatchDeleteMode && (
+        <BatchBar>
+          <BatchInfo>已选中 {selectedStorylineIds.size} 条故事线（选中父级会自动包含全部子级）。</BatchInfo>
+          <SecondaryButton type="button" onClick={handleSelectAllForBatchDelete} disabled={isBatchDeleting}>
+            全选
+          </SecondaryButton>
+          <SecondaryButton type="button" onClick={handleClearBatchDeleteSelection} disabled={isBatchDeleting}>
+            清空
+          </SecondaryButton>
+          <SecondaryButton type="button" onClick={handleInvertBatchDeleteSelection} disabled={isBatchDeleting}>
+            反选
+          </SecondaryButton>
+          <DangerButton
+            type="button"
+            onClick={handleBatchDeleteConfirm}
+            disabled={selectedStorylineIds.size === 0 || isBatchDeleting}
+          >
+            {isBatchDeleting ? '删除中...' : '确认删除'}
+          </DangerButton>
+        </BatchBar>
+      )}
       {isBulkImportOpen && (
         <BulkImportContainer>
           <BulkImportTitle>批量导入剧情线</BulkImportTitle>
           <BulkImportTextarea
             value={bulkImportText}
             onChange={(e) => setBulkImportText(e.target.value)}
-            placeholder={`推荐用你现在这种缩进写法：\n主线A\n  子线A1\n    关键节点A1-1\n  子线A2\n主线B\n\n规则：\n- 无缩进=顶级\n- 一级缩进=二级（2空格/1Tab/1全角空格）\n- 二级缩进=三级\n- 行尾可加颜色：主线A #A0C4FF\n- 也兼容路径写法：主线A/子线A1/关键节点A1-1`}
+            placeholder={`推荐用你现在这种缩进写法：\n主线A\n  子线A1\n    关键节点A1-1\n  子线A2\n主线B\n\n规则：\n- 无缩进=顶级\n- 一级缩进=二级（2空格/1Tab/1全角空格）\n- 二级缩进=三级\n- 行尾可加颜色：主线A #A0C4FF\n- 若要路径写法，请用 >：主线A > 子线A1 > 关键节点A1-1\n- / 不再作为层级分隔符`}
           />
           <BulkImportHint>
             按输入顺序创建；同层同名会自动跳过，不会覆盖已有剧情线；导入会自动补齐缺失父级。

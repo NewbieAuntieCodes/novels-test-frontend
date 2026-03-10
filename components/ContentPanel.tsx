@@ -67,8 +67,6 @@ interface ContentPanelProps {
   includeChildTagsInReadMode: boolean;
   onToggleIncludeChildTagsInReadMode: () => void;
   onSplitChapterAtCursor?: (chapterId: string, newContent: string, cursorOffset: number) => Promise<void> | void;
-  collapsedStorylineIds: Set<string>;
-  onToggleStorylineCollapsed: (storylineId: string) => void;
   storylineDragState: {
     draggedId: string | null;
     dragOverId: string | null;
@@ -90,12 +88,11 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   includeChildTagsInReadMode,
   onToggleIncludeChildTagsInReadMode,
   onSplitChapterAtCursor,
-  collapsedStorylineIds,
-  onToggleStorylineCollapsed,
   storylineDragState,
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
+  const [popoverCollapsedStorylineIds, setPopoverCollapsedStorylineIds] = useState<Set<string>>(new Set());
   const [isNearBottom, setIsNearBottom] = useState(false);
   const [shouldScrollToTop, setShouldScrollToTop] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -129,6 +126,34 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   const isReadMode = editorMode === 'read' || editorMode === 'plotRangeRead';
   const isReadOrAnnotationLikeMode = isReadMode || isAnnotationLikeMode;
   const isPreviewMode = isReadOrAnnotationLikeMode || editorMode === 'storyline';
+  const handleTogglePopoverStorylineCollapsed = useCallback((storylineId: string) => {
+    setPopoverCollapsedStorylineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(storylineId)) {
+        next.delete(storylineId);
+      } else {
+        next.add(storylineId);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const validIds = new Set((novel.storylines || []).map((storyline) => storyline.id));
+    setPopoverCollapsedStorylineIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (validIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [novel.storylines]);
 
   useEffect(() => {
     if (!locateRequest) return;
@@ -753,6 +778,17 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
     return descendantsMap;
   }, [allNovelTags]);
 
+  // 🆕 按锚点位置建立索引，避免在每段渲染时重复遍历全部锚点
+  const plotAnchorsByPosition = useMemo(() => {
+    const map = new Map<number, PlotAnchor[]>();
+    (novel.plotAnchors || []).forEach((anchor) => {
+      const list = map.get(anchor.position) || [];
+      list.push(anchor);
+      map.set(anchor.position, list);
+    });
+    return map;
+  }, [novel.plotAnchors]);
+
   // ✅ 拆分 storyline 渲染逻辑，减少不必要的重新计算
   const storylineContent = useMemo(() => {
     if (editorMode !== 'storyline') return null;
@@ -760,7 +796,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       const paragraphs = text.split('\n');
       let charIndex = displayOffsetForPreview;
 
-      const plotAnchors = novel.plotAnchors || [];
       const storylines = novel.storylines || [];
       const storylineMap = new Map(storylines.map(s => [s.id, s]));
 
@@ -773,7 +808,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
             charIndex = pEnd + 1; // +1 for newline
 
             // Find anchors that belong *before* this paragraph
-            const anchorsHere = plotAnchors.filter(anchor => anchor.position === positionForNewAnchor);
+            const anchorsHere = plotAnchorsByPosition.get(positionForNewAnchor) || [];
             
             // FIX: Refactored complex one-liner to be more explicit and type-safe, preventing potential inference errors.
             const anchorColors = anchorsHere
@@ -819,7 +854,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           })}
         </div>
       );
-  }, [editorMode, textForPreview, displayOffsetForPreview, novel.plotAnchors, novel.storylines]);
+  }, [editorMode, textForPreview, displayOffsetForPreview, plotAnchorsByPosition, novel.storylines]);
 
   const displayedContentOrSnippets = useMemo(() => {
     // Return pre-computed storyline content
@@ -1420,8 +1455,8 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           targetElement={popoverState.target}
           storylines={novel.storylines || []}
           existingAnchor={popoverState.anchor}
-          collapsedStorylineIds={collapsedStorylineIds}
-          onToggleStorylineCollapsed={onToggleStorylineCollapsed}
+          collapsedStorylineIds={popoverCollapsedStorylineIds}
+          onToggleStorylineCollapsed={handleTogglePopoverStorylineCollapsed}
           storylineDragState={storylineDragState}
           onSave={handleSaveAnchor}
           onDelete={handleDeleteAnchor}

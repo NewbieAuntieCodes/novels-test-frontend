@@ -51,7 +51,56 @@ export const useNovelEditorState = ({
 
   // 🆕 Track pending annotation creation promises to prevent deletion of temporary IDs
   const pendingCreationPromises = useRef<Map<string, Promise<string>>>(new Map()); // tempId -> Promise<realId>
+  const storylinePersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStorylinePersistRef = useRef<{ storylines?: Storyline[]; plotAnchors?: PlotAnchor[] }>({});
+  const pendingAnchorScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const flushStorylinePersistence = useCallback(async () => {
+    const pending = pendingStorylinePersistRef.current;
+    const hasStorylines = pending.storylines !== undefined;
+    const hasAnchors = pending.plotAnchors !== undefined;
+    if (!hasStorylines && !hasAnchors) return;
+
+    pendingStorylinePersistRef.current = {};
+    try {
+      await novelsApi.update(novel.id, pending);
+    } catch (error) {
+      console.error('保存剧情线/锚点到后端失败:', error);
+    }
+  }, [novel.id]);
+
+  const scheduleStorylinePersistence = useCallback(
+    (payload: { storylines?: Storyline[]; plotAnchors?: PlotAnchor[] }) => {
+      pendingStorylinePersistRef.current = {
+        ...pendingStorylinePersistRef.current,
+        ...payload,
+      };
+
+      if (storylinePersistTimerRef.current) {
+        clearTimeout(storylinePersistTimerRef.current);
+      }
+
+      storylinePersistTimerRef.current = setTimeout(() => {
+        storylinePersistTimerRef.current = null;
+        flushStorylinePersistence();
+      }, 200);
+    },
+    [flushStorylinePersistence]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (storylinePersistTimerRef.current) {
+        clearTimeout(storylinePersistTimerRef.current);
+        storylinePersistTimerRef.current = null;
+      }
+      if (pendingAnchorScrollTimerRef.current) {
+        clearTimeout(pendingAnchorScrollTimerRef.current);
+        pendingAnchorScrollTimerRef.current = null;
+      }
+      flushStorylinePersistence();
+    };
+  }, [flushStorylinePersistence]);
   const activeTagPlacementType: 'tag' | 'rangeTag' =
     editorMode === 'plotRange' || editorMode === 'plotRangeRead' ? 'rangeTag' : 'tag';
 
@@ -754,12 +803,50 @@ export const useNovelEditorState = ({
     }
   };
 
-  const handleSelectChapter = (chapterId: string | null) => {
+  const handleSelectChapter = useCallback((chapterId: string | null) => {
     setSelectedChapterId(chapterId);
     setActiveTagIdInternal(null); 
     setGlobalFilterTagNameInternal(null); 
     setCurrentSelection(null);
-  };
+  }, []);
+
+  const handleSelectPlotAnchor = useCallback((anchorId: string) => {
+    const anchor = (novel.plotAnchors || []).find((item) => item.id === anchorId);
+    if (!anchor) return;
+
+    if (pendingAnchorScrollTimerRef.current) {
+      clearTimeout(pendingAnchorScrollTimerRef.current);
+      pendingAnchorScrollTimerRef.current = null;
+    }
+
+    if (novel.chapters && novel.chapters.length > 0) {
+      const sortedChapters = [...novel.chapters].sort((a, b) => a.originalStartIndex - b.originalStartIndex);
+      const targetChapter =
+        sortedChapters.find((chapter) =>
+          chapter.originalStartIndex <= anchor.position && chapter.originalEndIndex > anchor.position
+        ) ||
+        sortedChapters.find((chapter, index) => {
+          const nextChapter = sortedChapters[index + 1];
+          if (!nextChapter) {
+            return anchor.position >= chapter.originalStartIndex;
+          }
+          return anchor.position >= chapter.originalStartIndex && anchor.position < nextChapter.originalStartIndex;
+        }) ||
+        null;
+
+      if (targetChapter && targetChapter.id !== selectedChapterId) {
+        setSelectedChapterId(targetChapter.id);
+        setCurrentSelection(null);
+      }
+    }
+
+    // Clear first so repeated clicks on the same anchor still retrigger scrolling.
+    setScrollToAnchorId(null);
+    pendingAnchorScrollTimerRef.current = setTimeout(() => {
+      setScrollToAnchorId(anchorId);
+      pendingAnchorScrollTimerRef.current = null;
+    }, 0);
+  }, [novel.plotAnchors, novel.chapters, selectedChapterId]);
 
   const handleAddTag = async (name: string, color: string, parentId: string | null) => {
     if (name.trim() === '' || !currentUser) return;
@@ -1470,13 +1557,8 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { storylines: updatedStorylines });
-    } catch (error) {
-      console.error('保存剧情线到后端失败:', error);
-      alert('创建剧情线失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ storylines: updatedStorylines });
   };
 
   const handleBatchAddStorylines = async (items: Array<{ path: string; color?: string }>) => {
@@ -1561,13 +1643,8 @@ export const useNovelEditorState = ({
       )
     );
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { storylines: updatedStorylines });
-    } catch (error) {
-      console.error('批量保存剧情线到后端失败:', error);
-      alert('批量导入剧情线失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ storylines: updatedStorylines });
 
     return { createdCount, skippedCount };
   };
@@ -1584,13 +1661,8 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { storylines: updatedStorylines });
-    } catch (error) {
-      console.error('更新剧情线到后端失败:', error);
-      alert('更新剧情线失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ storylines: updatedStorylines });
   };
 
   const getAllDescendantStorylineIds = (storylineId: string, allStorylines: Storyline[]): string[] => {
@@ -1659,13 +1731,8 @@ export const useNovelEditorState = ({
       )
     );
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { storylines: updatedStorylines });
-    } catch (error) {
-      console.error('调整剧情线顺序到后端失败:', error);
-      alert('调整剧情线顺序失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ storylines: updatedStorylines });
   };
 
   const handleDeleteStoryline = async (storylineId: string) => {
@@ -1696,16 +1763,83 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, {
-        storylines: updatedStorylines,
-        plotAnchors: updatedPlotAnchors
-      });
-    } catch (error) {
-      console.error('删除剧情线到后端失败:', error);
-      alert('删除剧情线失败,请稍后重试');
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({
+      storylines: updatedStorylines,
+      plotAnchors: updatedPlotAnchors,
+    });
+  };
+
+  const handleBatchDeleteStorylines = async (storylineIds: string[]) => {
+    const currentStorylines = novel.storylines || [];
+    if (!currentStorylines.length) {
+      return { deletedCount: 0, affectedAnchorCount: 0, pendingAnchorCount: 0 };
     }
+
+    const existingIdSet = new Set(currentStorylines.map((s) => s.id));
+    const rootIds = Array.from(
+      new Set(
+        (storylineIds || [])
+          .filter(Boolean)
+          .filter((id) => existingIdSet.has(id))
+      )
+    );
+    if (rootIds.length === 0) {
+      return { deletedCount: 0, affectedAnchorCount: 0, pendingAnchorCount: 0 };
+    }
+
+    const deleteIdSet = new Set<string>();
+    rootIds.forEach((id) => {
+      deleteIdSet.add(id);
+      const descendants = getAllDescendantStorylineIds(id, currentStorylines);
+      descendants.forEach((descendantId) => deleteIdSet.add(descendantId));
+    });
+
+    const updatedStorylines = currentStorylines.filter((s) => !deleteIdSet.has(s.id));
+
+    const oldPlotAnchors = novel.plotAnchors || [];
+    let affectedAnchorCount = 0;
+    let pendingAnchorCount = 0;
+    const updatedPlotAnchors = oldPlotAnchors.map((anchor) => {
+      const hasAffectedStoryline = anchor.storylineIds.some((id) => deleteIdSet.has(id));
+      if (!hasAffectedStoryline) {
+        return anchor;
+      }
+
+      affectedAnchorCount += 1;
+      const nextStorylineIds = anchor.storylineIds.filter((id) => !deleteIdSet.has(id));
+      const isPending = nextStorylineIds.length === 0;
+      if (isPending) pendingAnchorCount += 1;
+
+      return {
+        ...anchor,
+        storylineIds: nextStorylineIds,
+        isPending,
+      };
+    });
+
+    if (activeStorylineId && deleteIdSet.has(activeStorylineId)) {
+      setActiveStorylineId(null);
+      setScrollToAnchorId(null);
+    }
+
+    setNovels((novels) =>
+      novels.map((n) =>
+        n.id === novel.id
+          ? { ...n, storylines: updatedStorylines, plotAnchors: updatedPlotAnchors }
+          : n
+      )
+    );
+
+    scheduleStorylinePersistence({
+      storylines: updatedStorylines,
+      plotAnchors: updatedPlotAnchors,
+    });
+    return {
+      deletedCount: deleteIdSet.size,
+      affectedAnchorCount,
+      pendingAnchorCount,
+    };
   };
   
   const handleAddPlotAnchor = async (description: string, position: number, storylineIds: string[]) => {
@@ -1719,13 +1853,8 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
-    } catch (error) {
-      console.error('保存剧情锚点到后端失败:', error);
-      alert('创建剧情锚点失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ plotAnchors: updatedPlotAnchors });
   };
 
   const handleUpdatePlotAnchor = async (anchorId: string, updates: Partial<PlotAnchor>) => {
@@ -1740,13 +1869,8 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
-    } catch (error) {
-      console.error('更新剧情锚点到后端失败:', error);
-      alert('更新剧情锚点失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ plotAnchors: updatedPlotAnchors });
   };
 
   const handleDeletePlotAnchor = async (anchorId: string) => {
@@ -1759,13 +1883,8 @@ export const useNovelEditorState = ({
         : n
     ));
 
-    // 然后保存到后端
-    try {
-      await novelsApi.update(novel.id, { plotAnchors: updatedPlotAnchors });
-    } catch (error) {
-      console.error('删除剧情锚点到后端失败:', error);
-      alert('删除剧情锚点失败,请稍后重试');
-    }
+    // 合并保存，避免高频操作导致卡顿
+    scheduleStorylinePersistence({ plotAnchors: updatedPlotAnchors });
   };
 
 
@@ -1829,6 +1948,7 @@ export const useNovelEditorState = ({
     handleMergeChapterRange,
     handleUpdateChapterLevel,
     handleSelectChapter,
+    handleSelectPlotAnchor,
     handleAddTag,
     handleImportTagTemplate,
     handleUpdateTagParent,
@@ -1856,6 +1976,7 @@ export const useNovelEditorState = ({
     handleUpdateStoryline,
     handleReorderStoryline,
     handleDeleteStoryline,
+    handleBatchDeleteStorylines,
     handleAddPlotAnchor,
     handleUpdatePlotAnchor,
     handleDeletePlotAnchor,

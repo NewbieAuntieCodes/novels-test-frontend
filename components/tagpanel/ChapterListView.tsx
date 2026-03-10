@@ -9,6 +9,7 @@ interface ChapterListViewProps {
   selectedChapterId: string | null;
   onSelectChapter: (id: string | null) => void;
   onCreateChapter?: () => void;
+  onExportChapterRange?: (startChapter: number, endChapter: number) => Promise<void> | void;
   onMergeChapterWithPrevious?: (chapterId: string) => void;
   onMergeChapterRange?: (chapterIds: string[]) => void;
   onDeleteChapter: (chapterId: string) => void;
@@ -72,6 +73,21 @@ const MergeButton = styled.button<{ disabled?: boolean }>`
 
   &:hover {
     background-color: ${props => (props.disabled ? COLORS.gray200 : COLORS.secondaryHover)};
+  }
+`;
+
+const ExportButton = styled.button<{ disabled?: boolean }>`
+  padding: ${SPACING.xs} ${SPACING.sm};
+  font-size: ${FONTS.sizeSmall};
+  background-color: ${props => (props.disabled ? COLORS.gray200 : COLORS.primary)};
+  color: ${props => (props.disabled ? COLORS.textLight : COLORS.white)};
+  border: none;
+  border-radius: ${BORDERS.radius};
+  cursor: ${props => (props.disabled ? 'not-allowed' : 'pointer')};
+  transition: background-color 0.2s;
+
+  &:hover {
+    background-color: ${props => (props.disabled ? COLORS.gray200 : COLORS.primaryHover)};
   }
 `;
 
@@ -295,7 +311,16 @@ const LevelMenuItem = styled.button<{ isSelected: boolean }>`
 `;
 
 const ChapterListView: React.FC<ChapterListViewProps> = ({
-  chapters, selectedChapterId, onSelectChapter, onCreateChapter, onMergeChapterWithPrevious, onMergeChapterRange, onDeleteChapter, onRenameChapter, onUpdateChapterLevel
+  chapters,
+  selectedChapterId,
+  onSelectChapter,
+  onCreateChapter,
+  onExportChapterRange,
+  onMergeChapterWithPrevious,
+  onMergeChapterRange,
+  onDeleteChapter,
+  onRenameChapter,
+  onUpdateChapterLevel
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
@@ -561,6 +586,46 @@ const ChapterListView: React.FC<ChapterListViewProps> = ({
     handleCloseLevelMenu();
   };
 
+  const handleExportRange = async () => {
+    if (!onExportChapterRange) return;
+    const total = chapters.length;
+    if (total <= 0) {
+      alert('暂无章节可导出。');
+      return;
+    }
+
+    const rangeRaw = window.prompt(`请输入章节范围（1-${total}），例如：1-50`, `1-${total}`);
+    if (rangeRaw === null) return;
+
+    const rangeMatch = rangeRaw.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+    if (!rangeMatch) {
+      alert('范围格式错误，请输入如：1-50');
+      return;
+    }
+
+    const startChapter = Number.parseInt(rangeMatch[1], 10);
+    const endChapter = Number.parseInt(rangeMatch[2], 10);
+    const isInvalid =
+      Number.isNaN(startChapter) ||
+      Number.isNaN(endChapter) ||
+      startChapter < 1 ||
+      endChapter < 1 ||
+      startChapter > total ||
+      endChapter > total ||
+      startChapter > endChapter;
+
+    if (isInvalid) {
+      alert(`章节范围无效，请输入 1-${total}，且起始编号不能大于结束编号。`);
+      return;
+    }
+
+    try {
+      await Promise.resolve(onExportChapterRange(startChapter, endChapter));
+    } catch (error) {
+      alert(`导出失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };
+
   // 点击外部关闭菜单
   useEffect(() => {
     if (levelMenuChapterId) {
@@ -723,6 +788,16 @@ const ChapterListView: React.FC<ChapterListViewProps> = ({
             <CreateButton onClick={onCreateChapter} type="button">
               新建章节
             </CreateButton>
+          )}
+          {onExportChapterRange && (
+            <ExportButton
+              type="button"
+              disabled={chapters.length === 0}
+              onClick={handleExportRange}
+              title="按章节编号范围导出为 TXT（每章一个文件）"
+            >
+              范围导出TXT
+            </ExportButton>
           )}
         </HeaderActions>
       </HeaderRow>
