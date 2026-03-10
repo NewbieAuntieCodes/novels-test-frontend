@@ -234,6 +234,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
   const [dragOverSnippetId, setDragOverSnippetId] = useState<string | null>(null);
   const [selectedSnippetIds, setSelectedSnippetIds] = useState<Set<string>>(new Set());
   const [lastSelectedSnippetId, setLastSelectedSnippetId] = useState<string | null>(null);
+  const isReadMode = editorMode === 'read' || editorMode === 'plotRangeRead';
 
   const snippetsDataRef = useRef<Array<{
     id: string;
@@ -523,7 +524,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
               data-start-index={snippet.startIndex}
               data-end-index={snippet.endIndex}
               onClick={(e) => {
-                if (editorMode !== 'read') return;
+                if (!isReadMode) return;
                 e.stopPropagation();
 
                 // Ctrl + Shift + Click 实现范围选择
@@ -578,7 +579,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
                 }
               }}
               onDragOver={(e) => {
-                if (editorMode === 'read' && onBatchCreateAnnotations) {
+                if (isReadMode && onBatchCreateAnnotations) {
                   e.preventDefault();
                   e.stopPropagation();
                   setDragOverSnippetId(snippet.id);
@@ -594,7 +595,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
                 e.stopPropagation();
                 setDragOverSnippetId(null);
 
-                if (editorMode !== 'read' || !onBatchCreateAnnotations) return;
+                if (!isReadMode || !onBatchCreateAnnotations) return;
 
                 const tagId = e.dataTransfer.getData('text/plain');
                 if (!tagId) return;
@@ -653,7 +654,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
                     {chapterInfo.chapterNumber}
                   </SnippetChapterBadge>
                 )}
-                {editorMode === 'read' && chapterInfo && (
+                {isReadMode && chapterInfo && (
                   <LocateSnippetButton
                     effectiveColor={textColor}
                     onClick={(e) => {
@@ -706,6 +707,7 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
     );
   }, [
     editorMode,
+    isReadMode,
     globalFilterTagName,
     activeFilterTagDetails,
     annotations,
@@ -730,4 +732,3 @@ const SnippetContent: React.FC<SnippetContentProps> = ({
 };
 
 export default SnippetContent;
-

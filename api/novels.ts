@@ -1,5 +1,5 @@
 // 小说相关（本地 IndexedDB）
-import type { Novel, Chapter, Annotation } from '../types';
+import type { Novel, Chapter, Annotation, WritingWorkspace } from '../types';
 import { generateId } from '../utils';
 import { TokenManager } from './config';
 import {
@@ -28,6 +28,7 @@ interface NovelCreateRequest {
   category?: string;
   subcategory?: string;
   projectMode?: 'tag' | 'note';
+  writingWorkspace?: WritingWorkspace;
 }
 
 interface ChapterContentResponse {
@@ -110,6 +111,7 @@ export const novelsApi = {
       category: data.category,
       subcategory: data.subcategory,
       projectMode: data.projectMode ?? 'tag',
+      writingWorkspace: data.writingWorkspace,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
