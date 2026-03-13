@@ -2,20 +2,17 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import styled from '@emotion/styled';
 import type { Storyline, PlotAnchor } from "../types";
 import { COLORS, SPACING, FONTS, BORDERS, SHADOWS } from '../../styles';
-
-interface StorylineDragState {
-  draggedId: string | null;
-  dragOverId: string | null;
-  isDraggingOverList: boolean;
-}
+import type { StorylineDerivedData } from './storylineTree';
+import { flattenStorylineRows } from './storylineTree';
+import { useVirtualRows } from './useVirtualRows';
 
 interface PlotAnchorPopoverProps {
   targetElement: HTMLElement;
   storylines: Storyline[];
+  storylineDerivedData: StorylineDerivedData;
   existingAnchor: PlotAnchor | null;
   collapsedStorylineIds: Set<string>;
   onToggleStorylineCollapsed: (storylineId: string) => void;
-  storylineDragState: StorylineDragState;
   onSave: (description: string, storylineIds: string[]) => void;
   onDelete: () => void;
   onClose: () => void;
@@ -94,7 +91,7 @@ const SearchInput = styled.input`
   }
 `;
 
-const StorylineList = styled.div<{ isDragOverList: boolean }>`
+const StorylineList = styled.div`
   max-height: 190px;
   overflow-y: auto;
   border: 1px solid ${COLORS.borderLight};
@@ -103,14 +100,10 @@ const StorylineList = styled.div<{ isDragOverList: boolean }>`
   display: flex;
   flex-direction: column;
   gap: 2px;
-  outline: 1px dashed ${({ isDragOverList }) => (isDragOverList ? COLORS.primary : 'transparent')};
-  transition: outline-color 0.2s;
 `;
 
 const StorylineRow = styled.div<{
   level: number;
-  isDragging: boolean;
-  isDropTarget: boolean;
   isMatched: boolean;
 }>`
   display: flex;
@@ -119,8 +112,6 @@ const StorylineRow = styled.div<{
   padding: ${SPACING.xs};
   padding-left: ${({ level }) => `${level * 16 + 4}px`};
   border-radius: ${BORDERS.radius};
-  opacity: ${({ isDragging }) => (isDragging ? 0.5 : 1)};
-  outline: 1px solid ${({ isDropTarget }) => (isDropTarget ? COLORS.primary : 'transparent')};
   background-color: ${({ isMatched }) => (isMatched ? COLORS.gray100 : 'transparent')};
 
   &:hover {
@@ -200,18 +191,20 @@ const DeleteButton = styled.button`
   cursor: pointer;
   &:hover { text-decoration: underline; }
 `;
+const POPOVER_ROW_HEIGHT = 32;
 
 const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
   targetElement,
   storylines,
+  storylineDerivedData,
   existingAnchor,
   collapsedStorylineIds,
   onToggleStorylineCollapsed,
-  storylineDragState,
   onSave,
   onDelete,
   onClose,
 }) => {
+  const { childrenByParentId, parentByStorylineId } = storylineDerivedData;
   const [description, setDescription] = useState(existingAnchor?.description || '');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(existingAnchor?.storylineIds || []));
   const [searchQuery, setSearchQuery] = useState('');
@@ -219,23 +212,6 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
   const popoverRef = useRef<HTMLDivElement>(null);
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
-
-  const childrenByParentId = useMemo(() => {
-    const map = new Map<string | null, Storyline[]>();
-    storylines.forEach((storyline) => {
-      const key = storyline.parentId ?? null;
-      const children = map.get(key) || [];
-      children.push(storyline);
-      map.set(key, children);
-    });
-    return map;
-  }, [storylines]);
-
-  const parentByStorylineId = useMemo(() => {
-    const map = new Map<string, string | null>();
-    storylines.forEach((storyline) => map.set(storyline.id, storyline.parentId ?? null));
-    return map;
-  }, [storylines]);
 
   const visibleStorylineIds = useMemo(() => {
     if (!normalizedSearch) return null;
@@ -258,6 +234,23 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
 
     return visible;
   }, [storylines, normalizedSearch, parentByStorylineId]);
+
+  const flatStorylineRows = useMemo(
+    () =>
+      flattenStorylineRows({
+        childrenByParentId,
+        collapsedStorylineIds,
+        visibleStorylineIds,
+        forceExpand: Boolean(normalizedSearch),
+      }),
+    [childrenByParentId, collapsedStorylineIds, normalizedSearch, visibleStorylineIds]
+  );
+  const {
+    containerRef: listContainerRef,
+    visibleItems: visibleStorylineRows,
+    paddingTop,
+    paddingBottom,
+  } = useVirtualRows(flatStorylineRows, POPOVER_ROW_HEIGHT, 8);
 
   useEffect(() => {
     const rect = targetElement.getBoundingClientRect();
@@ -317,71 +310,46 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
     alert("请至少选择一个故事线。");
   };
 
-  const renderStorylineTree = (parentId: string | null, level: number): React.ReactNode[] => {
-    const currentLevelStorylines = childrenByParentId.get(parentId) || [];
-    const nodes: React.ReactNode[] = [];
+  const renderedStorylineNodes = visibleStorylineRows.map(({ storyline, level, hasVisibleChildren, isCollapsed }) => {
+    const isMatched = normalizedSearch.length > 0 && storyline.name.toLowerCase().includes(normalizedSearch);
 
-    currentLevelStorylines.forEach((storyline) => {
-      if (visibleStorylineIds && !visibleStorylineIds.has(storyline.id)) {
-        return;
-      }
-
-      const visibleChildren = (childrenByParentId.get(storyline.id) || []).filter((child) => {
-        if (!visibleStorylineIds) return true;
-        return visibleStorylineIds.has(child.id);
-      });
-      const hasVisibleChildren = visibleChildren.length > 0;
-      const isCollapsed = normalizedSearch ? false : collapsedStorylineIds.has(storyline.id);
-      const isMatched = normalizedSearch.length > 0 && storyline.name.toLowerCase().includes(normalizedSearch);
-
-      nodes.push(
-        <StorylineRow
-          key={storyline.id}
-          level={level}
-          isDragging={storylineDragState.draggedId === storyline.id}
-          isDropTarget={storylineDragState.dragOverId === storyline.id}
-          isMatched={isMatched}
-          onClick={(e) => {
-            const target = e.target as HTMLElement;
-            if (target.closest('button') || target.tagName === 'INPUT') return;
-            handleCheckboxChange(storyline.id);
-          }}
-        >
-          {hasVisibleChildren ? (
-            <CollapseButton
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onToggleStorylineCollapsed(storyline.id);
-              }}
-              title={isCollapsed ? '展开子剧情' : '折叠子剧情'}
-              aria-label={isCollapsed ? '展开子剧情' : '折叠子剧情'}
-            >
-              {isCollapsed ? '▸' : '▾'}
-            </CollapseButton>
-          ) : (
-            <CollapseSpacer />
-          )}
-          <input
-            type="checkbox"
-            checked={selectedIds.has(storyline.id)}
-            onChange={() => handleCheckboxChange(storyline.id)}
-          />
-          <CheckboxColorSwatch style={{ backgroundColor: storyline.color }} />
-          <StorylineName title={storyline.name}>{storyline.name}</StorylineName>
-        </StorylineRow>
-      );
-
-      if (!isCollapsed) {
-        nodes.push(...renderStorylineTree(storyline.id, level + 1));
-      }
-    });
-
-    return nodes;
-  };
-
-  const renderedStorylineNodes = renderStorylineTree(null, 0);
+    return (
+      <StorylineRow
+        key={storyline.id}
+        level={level}
+        isMatched={isMatched}
+        onClick={(e) => {
+          const target = e.target as HTMLElement;
+          if (target.closest('button') || target.tagName === 'INPUT') return;
+          handleCheckboxChange(storyline.id);
+        }}
+      >
+        {hasVisibleChildren ? (
+          <CollapseButton
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onToggleStorylineCollapsed(storyline.id);
+            }}
+            title={isCollapsed ? '展开子剧情' : '折叠子剧情'}
+            aria-label={isCollapsed ? '展开子剧情' : '折叠子剧情'}
+          >
+            {isCollapsed ? '▸' : '▾'}
+          </CollapseButton>
+        ) : (
+          <CollapseSpacer />
+        )}
+        <input
+          type="checkbox"
+          checked={selectedIds.has(storyline.id)}
+          onChange={() => handleCheckboxChange(storyline.id)}
+        />
+        <CheckboxColorSwatch style={{ backgroundColor: storyline.color }} />
+        <StorylineName title={storyline.name}>{storyline.name}</StorylineName>
+      </StorylineRow>
+    );
+  });
 
   return (
     <>
@@ -401,10 +369,10 @@ const PlotAnchorPopover: React.FC<PlotAnchorPopoverProps> = ({
           placeholder="搜索剧情线名称"
           aria-label="搜索剧情线"
         />
-        <StorylineList isDragOverList={storylineDragState.isDraggingOverList}>
+        <StorylineList ref={listContainerRef} style={{ paddingTop, paddingBottom }}>
           {storylines.length === 0 ? (
             <SearchEmpty>请先在左侧创建故事线</SearchEmpty>
-          ) : renderedStorylineNodes.length > 0 ? (
+          ) : flatStorylineRows.length > 0 ? (
             renderedStorylineNodes
           ) : (
             <SearchEmpty>未找到匹配的剧情线</SearchEmpty>

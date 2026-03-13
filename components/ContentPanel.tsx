@@ -6,6 +6,8 @@ import {
 import { getAllDescendantTagIds, getContrastingTextColor, getAllAncestorTagIds, countWords } from "../utils";
 import type { EditorMode } from './editor/NovelEditorPage';
 import PlotAnchorPopover from './storyline/PlotAnchorPopover';
+import type { StorylineDerivedData } from './storyline/storylineTree';
+import { getDefaultCollapsedStorylineIds } from './storyline/storylineTree';
 import { getNovelReadingPosition, setNovelReadingPosition } from '../utils/novelReadingPosition';
 import SnippetContent from './contentPanel/SnippetContent';
 import {
@@ -38,6 +40,7 @@ import {
 
 interface ContentPanelProps {
   novel: Novel;
+  storylineDerivedData: StorylineDerivedData;
   onNovelTextChange: (text: string) => void;
   onChapterTextChange: (chapterId: string, newContent: string) => void;
   onTextSelection: () => void;
@@ -67,15 +70,10 @@ interface ContentPanelProps {
   includeChildTagsInReadMode: boolean;
   onToggleIncludeChildTagsInReadMode: () => void;
   onSplitChapterAtCursor?: (chapterId: string, newContent: string, cursorOffset: number) => Promise<void> | void;
-  storylineDragState: {
-    draggedId: string | null;
-    dragOverId: string | null;
-    isDraggingOverList: boolean;
-  };
 }
 
 export const ContentPanel: React.FC<ContentPanelProps> = ({
-  novel, onNovelTextChange, onChapterTextChange, onTextSelection, annotations, getTagById, selectedChapter, style,
+  novel, storylineDerivedData, onNovelTextChange, onChapterTextChange, onTextSelection, annotations, getTagById, selectedChapter, style,
   viewMode, activeFilterTagDetails, globalFilterTagName, allNovelTags, editorMode,
   onDeleteAnnotation,
   currentSelection,
@@ -88,7 +86,6 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
   includeChildTagsInReadMode,
   onToggleIncludeChildTagsInReadMode,
   onSplitChapterAtCursor,
-  storylineDragState,
 }) => {
   const [editedText, setEditedText] = useState('');
   const [popoverState, setPopoverState] = useState<{ anchor: PlotAnchor | null; position: number; target: HTMLElement } | null>(null);
@@ -137,6 +134,36 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!popoverState) return;
+    if ((novel.storylines || []).length === 0) {
+      setPopoverCollapsedStorylineIds(new Set());
+      return;
+    }
+
+    setPopoverCollapsedStorylineIds((prev) => {
+      const next =
+        prev.size > 0
+          ? new Set(prev)
+          : getDefaultCollapsedStorylineIds(
+              novel.storylines || [],
+              storylineDerivedData.childrenByParentId,
+              storylineDerivedData.parentByStorylineId
+            );
+
+      const selectedStorylineIds = popoverState.anchor?.storylineIds || [];
+      selectedStorylineIds.forEach((storylineId) => {
+        let current: string | null = storylineId;
+        while (current) {
+          next.delete(current);
+          current = storylineDerivedData.parentByStorylineId.get(current) ?? null;
+        }
+      });
+
+      return next;
+    });
+  }, [novel.storylines, popoverState, storylineDerivedData.childrenByParentId, storylineDerivedData.parentByStorylineId]);
 
   useEffect(() => {
     const validIds = new Set((novel.storylines || []).map((storyline) => storyline.id));
@@ -796,8 +823,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
       const paragraphs = text.split('\n');
       let charIndex = displayOffsetForPreview;
 
-      const storylines = novel.storylines || [];
-      const storylineMap = new Map(storylines.map(s => [s.id, s]));
+      const storylineMap = storylineDerivedData.storylineById;
 
       return (
         <div>
@@ -854,7 +880,7 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
           })}
         </div>
       );
-  }, [editorMode, textForPreview, displayOffsetForPreview, plotAnchorsByPosition, novel.storylines]);
+  }, [displayOffsetForPreview, editorMode, plotAnchorsByPosition, storylineDerivedData.storylineById, textForPreview]);
 
   const displayedContentOrSnippets = useMemo(() => {
     // Return pre-computed storyline content
@@ -1454,10 +1480,10 @@ export const ContentPanel: React.FC<ContentPanelProps> = ({
         <PlotAnchorPopover
           targetElement={popoverState.target}
           storylines={novel.storylines || []}
+          storylineDerivedData={storylineDerivedData}
           existingAnchor={popoverState.anchor}
           collapsedStorylineIds={popoverCollapsedStorylineIds}
           onToggleStorylineCollapsed={handleTogglePopoverStorylineCollapsed}
-          storylineDragState={storylineDragState}
           onSave={handleSaveAnchor}
           onDelete={handleDeleteAnchor}
           onClose={() => setPopoverState(null)}

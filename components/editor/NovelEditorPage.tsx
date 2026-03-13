@@ -16,6 +16,7 @@ import StorylinePanel from '../storyline/StorylinePanel';
 import StorylineTrackerPanel from '../storyline/StorylineTrackerPanel';
 import RightSidebarPanel from './RightSidebarPanel';
 import WritingModeWorkspace from './writing/WritingModeWorkspace';
+import { buildStorylineDerivedData } from '../storyline/storylineTree';
 import { novelsApi, annotationsApi } from '../../api';
 import { tagCompatApi as tagsApi } from '../../api/tagCompat';
 import { termCompatApi } from '../../api/termCompat';
@@ -51,11 +52,6 @@ interface NovelEditorPageProps {
 
 export type EditorMode = 'edit' | 'annotation' | 'plotRange' | 'read' | 'plotRangeRead' | 'storyline' | 'writing';
 type WorkspaceMode = 'tag' | 'note';
-type StorylineDragState = {
-  draggedId: string | null;
-  dragOverId: string | null;
-  isDraggingOverList: boolean;
-};
 
 const EDITOR_LOCATE_STORAGE_KEY = 'novelEditorLocateRequest';
 const EDITOR_WORKSPACE_STORAGE_KEY = 'novelEditorWorkspaceMode';
@@ -214,43 +210,10 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
   const [isLoadingNovelData, setIsLoadingNovelData] = useState(false);
   const [loadedAnnotationsForNovelIds, setLoadedAnnotationsForNovelIds] = useState<Set<string>>(new Set());
   const [locateRequest, setLocateRequest] = useState<{ chapterId: string; absoluteIndex: number } | null>(null);
-  const [storylineDragState, setStorylineDragState] = useState<StorylineDragState>({
-    draggedId: null,
-    dragOverId: null,
-    isDraggingOverList: false,
-  });
   const tagEditorBehaviorMode: EditorMode =
     tagEditorMode === 'plotRange'
       ? 'annotation'
       : (tagEditorMode === 'plotRangeRead' ? 'read' : tagEditorMode);
-
-  const handleStorylineDragStateChange = (state: StorylineDragState) => {
-    setStorylineDragState((prev) => {
-      if (
-        prev.draggedId === state.draggedId &&
-        prev.dragOverId === state.dragOverId &&
-        prev.isDraggingOverList === state.isDraggingOverList
-      ) {
-        return prev;
-      }
-      return state;
-    });
-  };
-
-  const storylineIdSet = useMemo(
-    () => new Set((novel.storylines || []).map((storyline) => storyline.id)),
-    [novel.storylines]
-  );
-
-  useEffect(() => {
-    if (!storylineDragState.draggedId && !storylineDragState.dragOverId) return;
-    if (
-      (storylineDragState.draggedId && !storylineIdSet.has(storylineDragState.draggedId)) ||
-      (storylineDragState.dragOverId && !storylineIdSet.has(storylineDragState.dragOverId))
-    ) {
-      setStorylineDragState({ draggedId: null, dragOverId: null, isDraggingOverList: false });
-    }
-  }, [storylineDragState, storylineIdSet]);
 
   useEffect(() => {
     try {
@@ -564,6 +527,10 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
     currentUser,
     editorMode: tagEditorMode,
   });
+  const storylineDerivedData = useMemo(
+    () => buildStorylineDerivedData(novel.storylines || [], novel.plotAnchors || []),
+    [novel.plotAnchors, novel.storylines]
+  );
 
   const noteState = useNoteWorkspaceState({
     novel,
@@ -923,8 +890,10 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
         {tagEditorMode === 'storyline' ? (
           <StorylinePanel
             style={{ flexBasis: `${panelWidths[1]}%` }}
+            novelId={novel.id}
             storylines={novel.storylines || []}
             plotAnchors={novel.plotAnchors || []}
+            storylineDerivedData={storylineDerivedData}
             activeStorylineId={editorState.activeStorylineId}
             onAddStoryline={editorState.handleAddStoryline}
             onBatchAddStorylines={editorState.handleBatchAddStorylines}
@@ -933,7 +902,6 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
             onReorderStoryline={editorState.handleReorderStoryline}
             onDeleteStoryline={editorState.handleDeleteStoryline}
             onSelectStoryline={editorState.handleSelectStoryline}
-            onDragStateChange={handleStorylineDragStateChange}
           />
         ) : (
           <TagPanel
@@ -977,6 +945,7 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
         <ContentPanel
           style={{ flexBasis: `${panelWidths[2]}%` }}
           novel={novel}
+          storylineDerivedData={storylineDerivedData}
           onNovelTextChange={editorState.handleNovelTextChange}
           onChapterTextChange={editorState.handleChapterTextChange}
           onSplitChapterAtCursor={editorState.handleSplitChapterAtCursor}
@@ -1005,7 +974,6 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
           onLocateRequestHandled={() => setLocateRequest(null)}
           includeChildTagsInReadMode={editorState.includeChildTagsInReadMode}
           onToggleIncludeChildTagsInReadMode={editorState.toggleIncludeChildTagsInReadMode}
-          storylineDragState={storylineDragState}
         />
         <Resizer
           isHovered={hoveredResizer === 2}
@@ -1022,8 +990,11 @@ const NovelEditorPage: React.FC<NovelEditorPageProps> = ({
            <StorylineTrackerPanel
              style={{ flexBasis: `${panelWidths[3]}%` }}
              plotAnchors={novel.plotAnchors || []}
-             storylines={novel.storylines || []}
+             chapters={novel.chapters || []}
+             storylineDerivedData={storylineDerivedData}
              activeStorylineId={editorState.activeStorylineId}
+             selectedChapterId={editorState.selectedChapterId}
+             onSelectStoryline={editorState.handleSelectStoryline}
              onSelectAnchor={editorState.handleSelectPlotAnchor}
              onUpdateAnchor={editorState.handleUpdatePlotAnchor}
              onDeleteAnchor={editorState.handleDeletePlotAnchor}
